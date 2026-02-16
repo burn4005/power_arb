@@ -45,6 +45,22 @@ class DaySummary:
 
 
 @dataclass
+class PeriodRecord:
+    """Period-level data for visualization."""
+    timestamp: str
+    soc_kwh: float
+    action: str
+    solar_kw: float
+    load_kw: float
+    import_price_c: float
+    export_price_c: float
+    grid_import_kwh: float
+    grid_export_kwh: float
+    net_cost_c: float
+    baseline_cost_c: float
+
+
+@dataclass
 class BacktestResult:
     start_date: str
     end_date: str
@@ -72,6 +88,9 @@ class BacktestResult:
 
     # Per-day data
     daily_summaries: list[DaySummary]
+
+    # Per-period data (for visualization)
+    period_records: list[PeriodRecord] = field(default_factory=list)
 
     def print_summary(self):
         """Print a human-readable annual summary."""
@@ -138,7 +157,7 @@ class BacktestRunner:
         home_usage: dict[str, float],
         solar_yield: dict[tuple[int, int, int], float],
         import_markup_c: float = IMPORT_MARKUP_C,
-        reoptimize_every_n: int = 6,
+        reoptimize_every_n: int = 1,
         initial_soc_kwh: float | None = None,
         warm_up_days: int = 21,
     ):
@@ -183,6 +202,7 @@ class BacktestRunner:
         soc = self.initial_soc
         daily_summaries: list[DaySummary] = []
         all_action_counts: Counter = Counter()
+        period_records: list[PeriodRecord] = []
 
         # Forecast accuracy tracking
         forecast_errors: list[float] = []
@@ -259,6 +279,12 @@ class BacktestRunner:
                         fc_import = [fc[i]["import_c"] for i in range(n)]
                         fc_export = [fc[i]["export_c"] for i in range(n)]
 
+                        # Inject actual current-period prices so the
+                        # optimizer sees the real spot price, not the
+                        # median forecast (critical for spike capture).
+                        fc_import[0] = actual_import
+                        fc_export[0] = actual_export
+
                         result = self.optimizer.optimize(
                             current_soc_kwh=soc,
                             import_prices=fc_import,
@@ -284,6 +310,7 @@ class BacktestRunner:
                     action = Action.SELF_USE
 
                 # Execute action and settle at actual prices
+                soc_before = soc
                 inputs = PeriodInputs(
                     solar_kw=solar[hh],
                     load_kw=load[hh],
@@ -313,7 +340,25 @@ class BacktestRunner:
                 solar_to_load = min(solar_kwh, load_kwh)
                 base_import = (load_kwh - solar_to_load) * actual_import
                 base_export = (solar_kwh - solar_to_load) * actual_export
-                day_summary.baseline_net_cost_c += base_import - base_export
+                baseline_cost_c = base_import - base_export
+                day_summary.baseline_net_cost_c += baseline_cost_c
+
+                # Record period data for visualization
+                h = hh // 2
+                m_val = (hh % 2) * 30
+                period_records.append(PeriodRecord(
+                    timestamp=f"{date_str} {h:02d}:{m_val:02d}",
+                    soc_kwh=soc_before,
+                    action=action.name,
+                    solar_kw=solar[hh],
+                    load_kw=load[hh],
+                    import_price_c=actual_import,
+                    export_price_c=actual_export,
+                    grid_import_kwh=period_result.grid_import_kwh,
+                    grid_export_kwh=period_result.grid_export_kwh,
+                    net_cost_c=period_result.net_cost_cents,
+                    baseline_cost_c=baseline_cost_c,
+                ))
 
                 schedule_idx += 1
                 periods_since_reopt += 1
@@ -377,6 +422,7 @@ class BacktestRunner:
             action_counts=dict(all_action_counts),
             price_forecast_mae_c=mae,
             daily_summaries=daily_summaries,
+            period_records=period_records,
         )
 
     def _determine_date_range(self) -> tuple[str, str]:

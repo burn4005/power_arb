@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Battery Arbitrage Backtest</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e1e4e8;
+    overflow-x: hidden;
+  }
+
+  .header {
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #58a6ff;
+  }
+  .header .period {
+    font-size: 13px;
+    color: #8b949e;
+  }
+
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    padding: 12px 24px;
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+  }
+  .stat-card {
+    background: #1c2128;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .stat-card .label {
+    font-size: 11px;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .stat-card .value {
+    font-size: 20px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-card .sub {
+    font-size: 11px;
+    color: #8b949e;
+    margin-top: 2px;
+  }
+
+  .charts-area {
+    padding: 12px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .chart-container {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 12px;
+    position: relative;
+  }
+  .chart-container canvas {
+    width: 100% !important;
+    cursor: crosshair;
+  }
+  .chart-title {
+    font-size: 12px;
+    color: #8b949e;
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+
+  .controls {
+    background: #161b22;
+    border-top: 1px solid #30363d;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    position: sticky;
+    bottom: 0;
+  }
+  .controls button {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #e1e4e8;
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .controls button:hover { background: #30363d; }
+  .controls button.active { background: #1f6feb; border-color: #1f6feb; }
+
+  .speed-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .speed-control label {
+    font-size: 12px;
+    color: #8b949e;
+  }
+  .speed-control input[type="range"] {
+    width: 120px;
+    accent-color: #1f6feb;
+  }
+  .speed-control .speed-val {
+    font-size: 13px;
+    font-weight: 600;
+    min-width: 40px;
+    color: #58a6ff;
+  }
+
+  .progress-bar {
+    flex: 1;
+    height: 6px;
+    background: #21262d;
+    border-radius: 3px;
+    cursor: pointer;
+    position: relative;
+  }
+  .progress-bar .fill {
+    height: 100%;
+    background: #1f6feb;
+    border-radius: 3px;
+    transition: width 0.1s linear;
+  }
+
+  .time-display {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: #8b949e;
+    min-width: 100px;
+    text-align: right;
+  }
+
+  /* Action colors */
+  .action-GRID_CHARGE { color: #58a6ff; }
+  .action-SELF_USE { color: #3fb950; }
+  .action-HOLD { color: #d29922; }
+  .action-DISCHARGE_GRID { color: #f85149; }
+
+  .action-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .badge-GRID_CHARGE { background: #0d419d; color: #79c0ff; }
+  .badge-SELF_USE { background: #0d4228; color: #56d364; }
+  .badge-HOLD { background: #4d3800; color: #e3b341; }
+  .badge-DISCHARGE_GRID { background: #5a1a1a; color: #ff7b72; }
+
+  .soc-bar-container {
+    width: 100%;
+    height: 8px;
+    background: #21262d;
+    border-radius: 4px;
+    margin-top: 6px;
+    overflow: hidden;
+  }
+  .soc-bar-fill {
+    height: 100%;
+    background: #3fb950;
+    border-radius: 4px;
+    transition: width 0.15s linear;
+  }
+
+  #loading {
+    position: fixed;
+    inset: 0;
+    background: #0f1117;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 16px;
+    z-index: 100;
+  }
+  #loading .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid #30363d;
+    border-top-color: #58a6ff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div>Loading backtest data...</div>
+</div>
+
+<div id="app" style="display:none">
+  <div class="header">
+    <h1>Battery Arbitrage Backtest</h1>
+    <span class="period" id="headerPeriod"></span>
+  </div>
+
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="label">Date / Time</div>
+      <div class="value" id="statDate" style="font-size:16px">--</div>
+      <div class="sub" id="statDayNum">Day 0 of 0</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Battery SoC</div>
+      <div class="value" id="statSoc">-- kWh</div>
+      <div class="soc-bar-container"><div class="soc-bar-fill" id="socBarFill"></div></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Action</div>
+      <div class="value"><span class="action-badge" id="statAction">--</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Import Price</div>
+      <div class="value" id="statImport">-- c/kWh</div>
+      <div class="sub" id="statExport">Export: --</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Power</div>
+      <div class="value" id="statPower" style="font-size:14px">--</div>
+      <div class="sub" id="statPowerSub">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Cumulative Savings</div>
+      <div class="value" id="statSavings" style="color:#3fb950">$0.00</div>
+      <div class="sub" id="statSavingsSub">vs no-battery baseline</div>
+    </div>
+  </div>
+
+  <div class="charts-area">
+    <div class="chart-container" style="height:180px">
+      <div class="chart-title">Electricity Prices (c/kWh)</div>
+      <canvas id="chartPrices"></canvas>
+    </div>
+    <div class="chart-container" style="height:180px">
+      <div class="chart-title">Power Flows (kW)</div>
+      <canvas id="chartPower"></canvas>
+    </div>
+    <div class="chart-container" style="height:180px">
+      <div class="chart-title">Battery State of Charge (kWh)</div>
+      <canvas id="chartSoc"></canvas>
+    </div>
+    <div class="chart-container" style="height:120px">
+      <div class="chart-title">Cumulative Savings (AUD)</div>
+      <canvas id="chartCumulative"></canvas>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="btnRestart" title="Restart">&#9198;</button>
+    <button id="btnPlay" title="Play/Pause">&#9654;</button>
+    <button id="btnStep" title="Step Forward">&#9197;</button>
+
+    <div class="speed-control">
+      <label>Speed:</label>
+      <input type="range" id="speedSlider" min="0" max="100" value="10">
+      <span class="speed-val" id="speedVal">1x</span>
+    </div>
+
+    <div class="progress-bar" id="progressBar">
+      <div class="fill" id="progressFill"></div>
+    </div>
+
+    <div class="time-display" id="timeDisplay">0 / 0</div>
+  </div>
+</div>
+
+<script>
+// ─── State ───────────────────────────────────────────────────
+let D = null;          // loaded data
+let idx = 0;           // current period index
+let playing = false;
+let speed = 1;         // speed multiplier (1x = ~1 period every 2 seconds)
+let lastFrame = 0;
+let accumulator = 0;
+
+// ─── Charts ──────────────────────────────────────────────────
+let chartPrices, chartPower, chartSoc, chartCumulative;
+const WINDOW = 96;     // 2 days of context (48h)
+const HALF_WIN = WINDOW / 2; // playhead sits at centre of window
+
+const ACTION_COLORS = {
+  GRID_CHARGE: 'rgba(88,166,255,0.6)',
+  SELF_USE: 'rgba(63,185,80,0.6)',
+  HOLD: 'rgba(210,153,34,0.6)',
+  DISCHARGE_GRID: 'rgba(248,81,73,0.6)',
+};
+const ACTION_BG = {
+  GRID_CHARGE: 'rgba(88,166,255,0.08)',
+  SELF_USE: 'rgba(63,185,80,0.08)',
+  HOLD: 'rgba(210,153,34,0.08)',
+  DISCHARGE_GRID: 'rgba(248,81,73,0.08)',
+};
+
+// Speed mapping: slider 0-100 → 1x-100x (exponential)
+// 1x ≈ 1 period every 2 seconds; 100x ≈ 1 day per second
+function sliderToSpeed(v) {
+  if (v <= 0) return 1;
+  return Math.round(Math.pow(10, v / 50));  // 0→1, 50→10, 100→100
+}
+// Periods per second at a given speed multiplier
+function periodsPerSec(s) {
+  return s * 0.48;  // 1x=0.48/s (~1 per 2s), 100x=48/s (~1 day/s)
+}
+
+// ─── Load Data ───────────────────────────────────────────────
+fetch('backtest_data.json')
+  .then(r => r.json())
+  .then(data => {
+    D = data;
+    init();
+  })
+  .catch(err => {
+    document.getElementById('loading').innerHTML =
+      `<div style="color:#f85149">Failed to load data: ${err.message}<br>Run <code>python web/serve.py</code> first.</div>`;
+  });
+
+function init() {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('app').style.display = '';
+  document.getElementById('headerPeriod').textContent =
+    `${D.metadata.start_date} to ${D.metadata.end_date} | ${D.metadata.total_days} days | ${D.metadata.total_periods.toLocaleString()} periods`;
+
+  createCharts();
+  setupControls();
+  updateView();
+}
+
+// ─── Chart Setup ─────────────────────────────────────────────
+function chartDefaults() {
+  return {
+    animation: false,
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: true, position: 'top', labels: { color: '#8b949e', boxWidth: 12, font: { size: 11 } } },
+    },
+    scales: {
+      x: {
+        ticks: { color: '#484f58', maxTicksLimit: 12, font: { size: 10 } },
+        grid: { color: '#21262d' },
+      },
+      y: {
+        ticks: { color: '#484f58', font: { size: 10 } },
+        grid: { color: '#21262d' },
+      },
+    },
+  };
+}
+
+function createCharts() {
+  const emptyLabels = new Array(WINDOW).fill('');
+
+  // Price chart
+  chartPrices = new Chart(document.getElementById('chartPrices'), {
+    type: 'line',
+    data: {
+      labels: emptyLabels,
+      datasets: [
+        { label: 'Import', data: [], borderColor: '#f85149', backgroundColor: 'rgba(248,81,73,0.1)', borderWidth: 1.5, pointRadius: 0, fill: false },
+        { label: 'Export', data: [], borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.1)', borderWidth: 1.5, pointRadius: 0, fill: false },
+      ],
+    },
+    options: {
+      ...chartDefaults(),
+      plugins: { ...chartDefaults().plugins, annotation: { annotations: {
+        playhead: { type: 'line', xMin: HALF_WIN, xMax: HALF_WIN, borderColor: 'rgba(240,136,62,0.6)', borderWidth: 1, borderDash: [3, 3] },
+      }}},
+    },
+  });
+
+  // Power flows chart
+  chartPower = new Chart(document.getElementById('chartPower'), {
+    type: 'line',
+    data: {
+      labels: emptyLabels,
+      datasets: [
+        { label: 'Solar', data: [], borderColor: '#d29922', backgroundColor: 'rgba(210,153,34,0.15)', borderWidth: 1.5, pointRadius: 0, fill: true },
+        { label: 'Load', data: [], borderColor: '#f0883e', backgroundColor: 'rgba(240,136,62,0.1)', borderWidth: 1.5, pointRadius: 0, fill: false },
+        { label: 'Grid Export', data: [], borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.1)', borderWidth: 1.5, pointRadius: 0, fill: false, borderDash: [4, 2] },
+        { label: 'Grid Import', data: [], borderColor: '#f85149', backgroundColor: 'rgba(248,81,73,0.1)', borderWidth: 1.5, pointRadius: 0, fill: false, borderDash: [4, 2] },
+      ],
+    },
+    options: {
+      ...chartDefaults(),
+      scales: { ...chartDefaults().scales, y: { ...chartDefaults().scales.y, min: 0 } },
+      plugins: { ...chartDefaults().plugins, annotation: { annotations: {
+        playhead: { type: 'line', xMin: HALF_WIN, xMax: HALF_WIN, borderColor: 'rgba(240,136,62,0.6)', borderWidth: 1, borderDash: [3, 3] },
+      }}},
+    },
+  });
+
+  // SoC chart
+  chartSoc = new Chart(document.getElementById('chartSoc'), {
+    type: 'line',
+    data: {
+      labels: emptyLabels,
+      datasets: [
+        { label: 'SoC', data: [], borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.15)', borderWidth: 2, pointRadius: 0, fill: true },
+      ],
+    },
+    options: {
+      ...chartDefaults(),
+      scales: {
+        ...chartDefaults().scales,
+        y: { ...chartDefaults().scales.y, min: 0, max: D.metadata.capacity_kwh + 2 },
+      },
+      plugins: {
+        ...chartDefaults().plugins,
+        annotation: {
+          annotations: {
+            playhead: { type: 'line', xMin: HALF_WIN, xMax: HALF_WIN, borderColor: 'rgba(240,136,62,0.6)', borderWidth: 1, borderDash: [3, 3] },
+            capLine: {
+              type: 'line', yMin: D.metadata.capacity_kwh, yMax: D.metadata.capacity_kwh,
+              borderColor: 'rgba(248,81,73,0.4)', borderWidth: 1, borderDash: [4, 4],
+              label: { display: true, content: `Capacity: ${D.metadata.capacity_kwh} kWh`, position: 'start', color: '#8b949e', font: { size: 10 } },
+            },
+            minLine: {
+              type: 'line', yMin: D.metadata.min_soc_kwh, yMax: D.metadata.min_soc_kwh,
+              borderColor: 'rgba(210,153,34,0.4)', borderWidth: 1, borderDash: [4, 4],
+              label: { display: true, content: `Min: ${D.metadata.min_soc_kwh} kWh`, position: 'start', color: '#8b949e', font: { size: 10 } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  // Cumulative savings chart - downsampled to daily resolution
+  const dailySavings = downsampleDaily(D.cumulative_savings_c);
+  chartCumulative = new Chart(document.getElementById('chartCumulative'), {
+    type: 'line',
+    data: {
+      labels: dailySavings.labels,
+      datasets: [
+        { label: 'Savings', data: dailySavings.values, borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.1)', borderWidth: 1.5, pointRadius: 0, fill: true },
+      ],
+    },
+    options: {
+      ...chartDefaults(),
+      plugins: {
+        ...chartDefaults().plugins,
+        annotation: {
+          annotations: {
+            nowLine: {
+              type: 'line', xMin: 0, xMax: 0,
+              borderColor: '#f0883e', borderWidth: 2,
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+function downsampleDaily(arr) {
+  // Take every 48th value (end of each day)
+  const labels = [];
+  const values = [];
+  for (let i = 47; i < arr.length; i += 48) {
+    labels.push(D.timestamps[i].substring(0, 10));
+    values.push(Math.round(arr[i]) / 100);  // cents to dollars
+  }
+  return { labels, values };
+}
+
+// ─── Update View ─────────────────────────────────────────────
+function updateView() {
+  if (!D) return;
+
+  const i = idx;
+  const ts = D.timestamps[i];
+  const soc = D.soc_kwh[i];
+  const action = D.action[i];
+  const savings = D.cumulative_savings_c[i];
+
+  // Stats bar
+  document.getElementById('statDate').textContent = ts;
+  const dayNum = Math.floor(i / 48) + 1;
+  document.getElementById('statDayNum').textContent = `Day ${dayNum} of ${D.metadata.total_days}`;
+
+  document.getElementById('statSoc').textContent = `${soc.toFixed(1)} kWh`;
+  const socPct = (soc / D.metadata.capacity_kwh * 100);
+  document.getElementById('socBarFill').style.width = `${socPct}%`;
+  document.getElementById('socBarFill').style.background =
+    socPct < 20 ? '#f85149' : socPct < 50 ? '#d29922' : '#3fb950';
+
+  const actionEl = document.getElementById('statAction');
+  actionEl.textContent = action.replace('_', ' ');
+  actionEl.className = `action-badge badge-${action}`;
+
+  document.getElementById('statImport').textContent = `${D.import_price_c[i].toFixed(1)} c/kWh`;
+  document.getElementById('statExport').textContent = `Export: ${D.export_price_c[i].toFixed(1)} c/kWh`;
+
+  document.getElementById('statPower').textContent =
+    `Solar: ${D.solar_kw[i].toFixed(1)} kW | Load: ${D.load_kw[i].toFixed(1)} kW`;
+  const gridImp = D.grid_import_kwh[i];
+  const gridExp = D.grid_export_kwh[i];
+  document.getElementById('statPowerSub').textContent =
+    gridExp > 0.01 ? `Exporting ${(gridExp * 2).toFixed(1)} kW` :
+    gridImp > 0.01 ? `Importing ${(gridImp * 2).toFixed(1)} kW` : 'Grid balanced';
+
+  document.getElementById('statSavings').textContent = `$${(savings / 100).toFixed(2)}`;
+
+  // Update rolling charts — playhead centred in window
+  const winStart = Math.max(0, i - HALF_WIN);
+  const winEnd = Math.min(D.timestamps.length, winStart + WINDOW);
+  const centreInWin = i - winStart; // index of playhead within the window slice
+  const sliceLabels = D.timestamps.slice(winStart, winEnd).map(t => t.substring(11)); // just HH:MM
+  const sliceSoc = D.soc_kwh.slice(winStart, winEnd);
+  const sliceImport = D.import_price_c.slice(winStart, winEnd);
+  const sliceExport = D.export_price_c.slice(winStart, winEnd);
+  const sliceSolar = D.solar_kw.slice(winStart, winEnd);
+  const sliceLoad = D.load_kw.slice(winStart, winEnd);
+
+  // Price chart
+  chartPrices.data.labels = sliceLabels;
+  chartPrices.data.datasets[0].data = sliceImport;
+  chartPrices.data.datasets[1].data = sliceExport;
+  chartPrices.options.plugins.annotation.annotations.playhead.xMin = centreInWin;
+  chartPrices.options.plugins.annotation.annotations.playhead.xMax = centreInWin;
+  chartPrices.update('none');
+
+  // Power chart (kWh per half-hour × 2 = kW average)
+  const sliceGridExportKw = D.grid_export_kwh.slice(winStart, winEnd).map(v => v * 2);
+  const sliceGridImportKw = D.grid_import_kwh.slice(winStart, winEnd).map(v => v * 2);
+  chartPower.data.labels = sliceLabels;
+  chartPower.data.datasets[0].data = sliceSolar;
+  chartPower.data.datasets[1].data = sliceLoad;
+  chartPower.data.datasets[2].data = sliceGridExportKw;
+  chartPower.data.datasets[3].data = sliceGridImportKw;
+  chartPower.options.plugins.annotation.annotations.playhead.xMin = centreInWin;
+  chartPower.options.plugins.annotation.annotations.playhead.xMax = centreInWin;
+  chartPower.update('none');
+
+  // SoC chart — color by action
+  const actionColors = D.action.slice(winStart, winEnd).map(a => ACTION_COLORS[a] || 'rgba(88,166,255,0.6)');
+  chartSoc.data.labels = sliceLabels;
+  chartSoc.data.datasets[0].data = sliceSoc;
+  chartSoc.data.datasets[0].segment = {
+    borderColor: ctx => {
+      const si = ctx.p0DataIndex;
+      return actionColors[si] || '#58a6ff';
+    },
+  };
+  chartSoc.options.plugins.annotation.annotations.playhead.xMin = centreInWin;
+  chartSoc.options.plugins.annotation.annotations.playhead.xMax = centreInWin;
+  chartSoc.update('none');
+
+  // Cumulative chart — move "now" line
+  const dayIdx = Math.floor(i / 48);
+  chartCumulative.options.plugins.annotation.annotations.nowLine.xMin = dayIdx;
+  chartCumulative.options.plugins.annotation.annotations.nowLine.xMax = dayIdx;
+  chartCumulative.update('none');
+
+  // Progress bar
+  const pct = (i / (D.timestamps.length - 1)) * 100;
+  document.getElementById('progressFill').style.width = `${pct}%`;
+  document.getElementById('timeDisplay').textContent =
+    `${(i + 1).toLocaleString()} / ${D.timestamps.length.toLocaleString()}`;
+}
+
+// ─── Playback ────────────────────────────────────────────────
+function tick(now) {
+  if (!playing) return;
+
+  if (lastFrame === 0) lastFrame = now;
+  const dt = (now - lastFrame) / 1000; // seconds elapsed
+  lastFrame = now;
+
+  // Accumulate periods based on speed
+  accumulator += periodsPerSec(speed) * dt;
+  const steps = Math.floor(accumulator);
+  accumulator -= steps;
+
+  if (steps > 0) {
+    idx = Math.min(idx + steps, D.timestamps.length - 1);
+    updateView();
+
+    if (idx >= D.timestamps.length - 1) {
+      playing = false;
+      document.getElementById('btnPlay').textContent = '\u25B6';
+      return;
+    }
+  }
+
+  requestAnimationFrame(tick);
+}
+
+// ─── Chart Click Handling ─────────────────────────────────────
+function handleChartClick(chart, event) {
+  const points = chart.getElementsAtEventForMode(event, 'index', { intersect: false }, false);
+  if (points.length > 0) {
+    const clickedLocalIdx = points[0].index;
+    // Convert local chart index back to global data index
+    const winStart = Math.max(0, idx - HALF_WIN);
+    const newIdx = winStart + clickedLocalIdx;
+    idx = Math.max(0, Math.min(newIdx, D.timestamps.length - 1));
+    updateView();
+  }
+}
+
+// ─── Controls ────────────────────────────────────────────────
+function setupControls() {
+  const btnPlay = document.getElementById('btnPlay');
+  const btnRestart = document.getElementById('btnRestart');
+  const btnStep = document.getElementById('btnStep');
+  const slider = document.getElementById('speedSlider');
+  const progressBar = document.getElementById('progressBar');
+
+  btnPlay.addEventListener('click', () => {
+    playing = !playing;
+    btnPlay.textContent = playing ? '\u23F8' : '\u25B6';
+    if (playing) {
+      lastFrame = 0;
+      accumulator = 0;
+      requestAnimationFrame(tick);
+    }
+  });
+
+  btnRestart.addEventListener('click', () => {
+    idx = 0;
+    accumulator = 0;
+    updateView();
+  });
+
+  btnStep.addEventListener('click', () => {
+    if (idx < D.timestamps.length - 1) {
+      idx++;
+      updateView();
+    }
+  });
+
+  slider.addEventListener('input', () => {
+    speed = sliderToSpeed(parseInt(slider.value));
+    document.getElementById('speedVal').textContent = `${speed}x`;
+  });
+
+  progressBar.addEventListener('click', (e) => {
+    const rect = progressBar.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    idx = Math.floor(pct * (D.timestamps.length - 1));
+    idx = Math.max(0, Math.min(idx, D.timestamps.length - 1));
+    updateView();
+  });
+
+  // Click on charts to jump to that point
+  document.getElementById('chartPrices').addEventListener('click', (e) => handleChartClick(chartPrices, e));
+  document.getElementById('chartPower').addEventListener('click', (e) => handleChartClick(chartPower, e));
+  document.getElementById('chartSoc').addEventListener('click', (e) => handleChartClick(chartSoc, e));
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      btnPlay.click();
+    } else if (e.code === 'ArrowRight') {
+      if (idx < D.timestamps.length - 1) { idx = Math.min(idx + 48, D.timestamps.length - 1); updateView(); }
+    } else if (e.code === 'ArrowLeft') {
+      if (idx > 0) { idx = Math.max(idx - 48, 0); updateView(); }
+    } else if (e.code === 'Home') {
+      idx = 0; updateView();
+    } else if (e.code === 'End') {
+      idx = D.timestamps.length - 1; updateView();
+    }
+  });
+}
+</script>
+</body>
+</html>
