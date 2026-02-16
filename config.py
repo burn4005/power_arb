@@ -74,6 +74,12 @@ class BatteryConfig:
 
 
 @dataclass(frozen=True)
+class RetailerConfig:
+    retailer: str = _env("RETAILER", "amber")  # 'amber' or 'custom'
+    custom_pricing_csv: str = _env("CUSTOM_PRICING_CSV", "")
+
+
+@dataclass(frozen=True)
 class SystemConfig:
     scheduler_interval_s: int = _env_int("SCHEDULER_INTERVAL_SECONDS", 300)
     log_level: str = _env("LOG_LEVEL", "INFO")
@@ -89,4 +95,5 @@ amber = AmberConfig()
 solcast = SolcastConfig()
 foxess = FoxESSConfig()
 battery = BatteryConfig()
+retailer = RetailerConfig()
 system = SystemConfig()

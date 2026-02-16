@@ -28,6 +28,7 @@ import config
 from amber.client import AmberClient
 from amber.price_dampener import PriceDampener
 from foxess.modbus_client import FoxESSModbusClient, WorkMode
+from pricing.custom_csv import generate_price_intervals
 from solcast.client import SolcastClient, FETCH_HOURS_AEST
 from forecasting.consumption import ConsumptionForecaster
 from forecasting.solar import SolarForecaster
@@ -83,6 +84,7 @@ class PowerArbSystem:
         # Manual override: None = AUTO (optimizer controls), or an Action name
         self._manual_override: str | None = None
         self._override_expires: datetime | None = None
+        self._using_custom = False
 
     def run_cycle(self):
         """Execute one optimization cycle."""
@@ -132,17 +134,35 @@ class PowerArbSystem:
             )
 
             # 2. Fetch prices
-            prices = self.amber.fetch_current_and_forecast()
-            import_prices_raw = prices["import"]
-            export_prices_raw = prices["export"]
+            if config.retailer.retailer == "custom" and config.retailer.custom_pricing_csv:
+                prices = generate_price_intervals(
+                    config.retailer.custom_pricing_csv,
+                    start=cycle_start,
+                    hours=48,
+                )
+                import_prices_raw = prices["import"]
+                export_prices_raw = prices["export"]
+                # Custom prices are fixed schedules — no dampening needed
+                dampened_import = None
+                dampened_export = None
+            else:
+                prices = self.amber.fetch_current_and_forecast()
+                import_prices_raw = prices["import"]
+                export_prices_raw = prices["export"]
+                dampened_import = None
+                dampened_export = None
 
             if not import_prices_raw:
-                logger.error("No price data from Amber; skipping cycle")
+                logger.error("No price data; skipping cycle")
                 return
 
-            # 3. Dampen forecast prices
-            dampened_import = self.dampener.dampen(import_prices_raw, cycle_start)
-            dampened_export = self.dampener.dampen(export_prices_raw, cycle_start)
+            # 3. Dampen forecast prices (only for Amber; custom prices used as-is)
+            if config.retailer.retailer == "custom" and config.retailer.custom_pricing_csv:
+                dampened_import = import_prices_raw
+                dampened_export = export_prices_raw
+            else:
+                dampened_import = self.dampener.dampen(import_prices_raw, cycle_start)
+                dampened_export = self.dampener.dampen(export_prices_raw, cycle_start)
 
             # 4. Get solar forecast
             solar_fc = self.solar_forecaster.forecast(hours=48, start=cycle_start)
@@ -159,8 +179,14 @@ class PowerArbSystem:
                 logger.error("No aligned forecast periods; skipping cycle")
                 return
 
-            import_cents = [dampened_import[i].dampened_per_kwh for i in range(n_periods)]
-            export_cents = [dampened_export[i].dampened_per_kwh for i in range(n_periods)]
+            self._using_custom = config.retailer.retailer == "custom" and config.retailer.custom_pricing_csv
+            using_custom = self._using_custom
+            if using_custom:
+                import_cents = [dampened_import[i].per_kwh for i in range(n_periods)]
+                export_cents = [dampened_export[i].per_kwh for i in range(n_periods)]
+            else:
+                import_cents = [dampened_import[i].dampened_per_kwh for i in range(n_periods)]
+                export_cents = [dampened_export[i].dampened_per_kwh for i in range(n_periods)]
             solar_kw = [solar_fc[i]["solar_kw"] for i in range(n_periods)]
             load_kw = [consumption_fc[i]["load_kw"] for i in range(n_periods)]
             timestamps = [dampened_import[i].timestamp for i in range(n_periods)]
@@ -355,8 +381,14 @@ class PowerArbSystem:
 
                 "forecast": {
                     "timestamps": timestamps,
-                    "raw_import_price_c": [round(dampened_import[i].raw_per_kwh, 1) for i in range(n_periods)],
-                    "raw_export_price_c": [round(dampened_export[i].raw_per_kwh, 1) for i in range(n_periods)],
+                    "raw_import_price_c": [
+                        round(dampened_import[i].per_kwh if self._using_custom else dampened_import[i].raw_per_kwh, 1)
+                        for i in range(n_periods)
+                    ],
+                    "raw_export_price_c": [
+                        round(dampened_export[i].per_kwh if self._using_custom else dampened_export[i].raw_per_kwh, 1)
+                        for i in range(n_periods)
+                    ],
                     "import_price_c": [round(v, 1) for v in import_cents],
                     "export_price_c": [round(v, 1) for v in export_cents],
                     "solar_kw": [round(v, 2) for v in solar_kw],
@@ -477,11 +509,79 @@ class PowerArbSystem:
             "expires": self._override_expires.isoformat(),
         }
 
+    @staticmethod
+    def _read_env_file() -> dict[str, str]:
+        """Read the .env file and return key-value pairs."""
+        env_path = Path(__file__).parent / ".env"
+        settings = {}
+        if env_path.exists():
+            with open(env_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, _, value = line.partition("=")
+                        settings[key.strip()] = value.strip()
+        return settings
+
+    @staticmethod
+    def _write_env_file(settings: dict[str, str]):
+        """Write settings back to the .env file, preserving comments and order."""
+        env_path = Path(__file__).parent / ".env"
+        lines = []
+        written_keys = set()
+
+        if env_path.exists():
+            with open(env_path, "r") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("#") and "=" in stripped:
+                        key = stripped.partition("=")[0].strip()
+                        if key in settings:
+                            lines.append(f"{key}={settings[key]}\n")
+                            written_keys.add(key)
+                        else:
+                            lines.append(line)
+                    else:
+                        lines.append(line)
+
+        # Append any new keys not already in file
+        new_keys = set(settings.keys()) - written_keys
+        if new_keys:
+            if lines and not lines[-1].endswith("\n"):
+                lines.append("\n")
+            lines.append("\n# Added by settings page\n")
+            for key in sorted(new_keys):
+                lines.append(f"{key}={settings[key]}\n")
+
+        with open(env_path, "w") as f:
+            f.writelines(lines)
+
+    @staticmethod
+    def _parse_csv_preview(csv_path: str) -> list[dict]:
+        """Read a custom pricing CSV and return rows for preview."""
+        import csv as csv_mod
+        rows = []
+        with open(csv_path, newline="", encoding="utf-8-sig") as f:
+            reader = csv_mod.reader(f)
+            next(reader, None)  # skip header
+            for row in reader:
+                if len(row) < 3:
+                    continue
+                rows.append({
+                    "time": row[0].strip(),
+                    "import_price": row[1].strip(),
+                    "export_price": row[2].strip(),
+                })
+        return rows
+
     def _start_dashboard_server(self):
         """Start dashboard HTTP server in a background daemon thread."""
         web_dir = str(Path(__file__).parent / "web")
         port = config.system.dashboard_port
         system = self  # capture for handler closure
+        project_root = Path(__file__).parent
 
         class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
@@ -489,6 +589,13 @@ class PowerArbSystem:
 
             def log_message(self, format, *args):
                 pass  # suppress access logs
+
+            def _send_json(self, data, status=200):
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps(data).encode())
 
             def do_POST(self):
                 if self.path == "/api/override":
@@ -498,15 +605,79 @@ class PowerArbSystem:
                         mode = body.get("mode", "AUTO").upper()
                         duration = int(body.get("duration_minutes", 60))
                         result = system._set_override(mode, duration)
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(json.dumps(result).encode())
+                        self._send_json(result)
                     except Exception as e:
-                        self.send_response(400)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(json.dumps({"ok": False, "error": str(e)}).encode())
+                        self._send_json({"ok": False, "error": str(e)}, 400)
+
+                elif self.path == "/api/settings":
+                    try:
+                        length = int(self.headers.get("Content-Length", 0))
+                        body = json.loads(self.rfile.read(length)) if length else {}
+                        system._write_env_file(body)
+                        logger.info("Settings saved via web UI")
+                        self._send_json({"ok": True})
+                    except Exception as e:
+                        self._send_json({"ok": False, "error": str(e)}, 400)
+
+                elif self.path == "/api/settings/upload-pricing":
+                    try:
+                        content_type = self.headers.get("Content-Type", "")
+                        if "multipart/form-data" not in content_type:
+                            self._send_json({"ok": False, "error": "Expected multipart form data"}, 400)
+                            return
+
+                        # Parse multipart boundary
+                        boundary = content_type.split("boundary=")[1].strip()
+                        length = int(self.headers.get("Content-Length", 0))
+                        raw = self.rfile.read(length)
+
+                        # Extract file content from multipart body
+                        boundary_bytes = boundary.encode()
+                        parts = raw.split(b"--" + boundary_bytes)
+
+                        file_content = None
+                        filename = "custom_pricing.csv"
+                        for part in parts:
+                            if b"filename=" in part:
+                                # Extract filename
+                                header_end = part.index(b"\r\n\r\n")
+                                header = part[:header_end].decode("utf-8", errors="replace")
+                                for segment in header.split(";"):
+                                    segment = segment.strip()
+                                    if segment.startswith("filename="):
+                                        filename = segment.split("=", 1)[1].strip('"')
+                                file_content = part[header_end + 4:]
+                                # Remove trailing boundary markers
+                                if file_content.endswith(b"\r\n"):
+                                    file_content = file_content[:-2]
+                                break
+
+                        if file_content is None:
+                            self._send_json({"ok": False, "error": "No file found in upload"}, 400)
+                            return
+
+                        # Save to project root
+                        dest = project_root / filename
+                        with open(dest, "wb") as f:
+                            f.write(file_content)
+                        logger.info("Custom pricing CSV saved: %s", dest)
+
+                        # Validate and preview
+                        preview = system._parse_csv_preview(str(dest))
+
+                        # Update env file with the filename
+                        env_settings = system._read_env_file()
+                        env_settings["CUSTOM_PRICING_CSV"] = filename
+                        system._write_env_file(env_settings)
+
+                        self._send_json({
+                            "ok": True,
+                            "filename": filename,
+                            "preview": preview,
+                        })
+                    except Exception as e:
+                        self._send_json({"ok": False, "error": str(e)}, 400)
+
                 else:
                     self.send_error(404)
 
@@ -516,10 +687,25 @@ class PowerArbSystem:
                         "override": system._manual_override or "AUTO",
                         "expires": system._override_expires.isoformat() if system._override_expires else None,
                     }
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps(result).encode())
+                    self._send_json(result)
+
+                elif self.path == "/api/settings":
+                    self._send_json(system._read_env_file())
+
+                elif self.path == "/api/settings/pricing-preview":
+                    try:
+                        env = system._read_env_file()
+                        csv_file = env.get("CUSTOM_PRICING_CSV", "")
+                        if csv_file:
+                            csv_path = project_root / csv_file
+                            if csv_path.exists():
+                                preview = system._parse_csv_preview(str(csv_path))
+                                self._send_json({"ok": True, "preview": preview})
+                                return
+                        self._send_json({"ok": False, "error": "No pricing CSV configured"})
+                    except Exception as e:
+                        self._send_json({"ok": False, "error": str(e)}, 400)
+
                 else:
                     super().do_GET()
 

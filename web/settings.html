@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Settings — Battery Arbitrage</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e1e4e8;
+    overflow-x: hidden;
+  }
+
+  .header {
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #58a6ff;
+  }
+  .header .nav-links {
+    display: flex;
+    gap: 16px;
+  }
+  .header .nav-links a {
+    color: #8b949e;
+    text-decoration: none;
+    font-size: 13px;
+  }
+  .header .nav-links a:hover { color: #58a6ff; }
+
+  .content {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+
+  .section {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+  .section-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid #30363d;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-header h2 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #e1e4e8;
+  }
+  .section-header .icon {
+    font-size: 16px;
+  }
+  .section-body {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .form-row {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    align-items: center;
+    gap: 12px;
+  }
+  .form-row label {
+    font-size: 13px;
+    color: #8b949e;
+    font-weight: 500;
+  }
+  .form-row input[type="text"],
+  .form-row input[type="number"],
+  .form-row input[type="password"],
+  .form-row select {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    color: #e1e4e8;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    width: 100%;
+  }
+  .form-row input:focus,
+  .form-row select:focus {
+    outline: none;
+    border-color: #58a6ff;
+    box-shadow: 0 0 0 2px rgba(88,166,255,0.15);
+  }
+  .form-row .hint {
+    grid-column: 2;
+    font-size: 11px;
+    color: #484f58;
+    margin-top: -8px;
+  }
+
+  .form-row-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-left: 212px;
+  }
+  .form-row-checkbox input[type="checkbox"] {
+    accent-color: #58a6ff;
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+  }
+  .form-row-checkbox label {
+    font-size: 13px;
+    color: #8b949e;
+    cursor: pointer;
+  }
+
+  .custom-pricing-area {
+    display: none;
+    margin-top: 8px;
+    padding: 14px;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+  }
+  .custom-pricing-area.visible { display: block; }
+
+  .file-upload {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+  }
+  .file-upload .btn-upload {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #e1e4e8;
+    border-radius: 6px;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .file-upload .btn-upload:hover { background: #30363d; }
+  .file-upload .file-name {
+    font-size: 13px;
+    color: #8b949e;
+    font-style: italic;
+  }
+  .file-upload .file-name.has-file {
+    color: #3fb950;
+    font-style: normal;
+    font-weight: 500;
+  }
+  .file-upload input[type="file"] { display: none; }
+
+  .csv-format {
+    font-size: 11px;
+    color: #484f58;
+    margin-top: 8px;
+    line-height: 1.6;
+  }
+  .csv-format code {
+    background: #161b22;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    color: #8b949e;
+  }
+  .csv-preview {
+    margin-top: 10px;
+    display: none;
+  }
+  .csv-preview.visible { display: block; }
+  .csv-preview table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .csv-preview th {
+    text-align: left;
+    color: #8b949e;
+    padding: 6px 10px;
+    border-bottom: 1px solid #30363d;
+    font-weight: 600;
+  }
+  .csv-preview td {
+    padding: 4px 10px;
+    border-bottom: 1px solid #21262d;
+    color: #e1e4e8;
+  }
+
+  .actions-bar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 16px 0;
+  }
+  .btn {
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 10px 24px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+  }
+  .btn-primary {
+    background: #238636;
+    border-color: #238636;
+    color: #fff;
+  }
+  .btn-primary:hover { background: #2ea043; }
+  .btn-primary:disabled {
+    background: #21262d;
+    border-color: #30363d;
+    color: #484f58;
+    cursor: not-allowed;
+  }
+  .btn-secondary {
+    background: #21262d;
+    color: #c9d1d9;
+  }
+  .btn-secondary:hover { background: #30363d; }
+
+  .toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    z-index: 200;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: all 0.3s ease;
+    pointer-events: none;
+  }
+  .toast.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .toast.success { background: #238636; color: #fff; }
+  .toast.error { background: #da3633; color: #fff; }
+
+  .divider {
+    height: 1px;
+    background: #21262d;
+    margin: 4px 0;
+  }
+
+  @media (max-width: 768px) {
+    .form-row {
+      grid-template-columns: 1fr;
+    }
+    .form-row-checkbox {
+      padding-left: 0;
+    }
+    .form-row .hint {
+      grid-column: 1;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Settings</h1>
+  <div class="nav-links">
+    <a href="index.html">Backtest</a>
+    <a href="dashboard.html">Dashboard</a>
+  </div>
+</div>
+
+<div class="content">
+
+  <!-- Retailer -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">&#9889;</span>
+      <h2>Retailer / Pricing Source</h2>
+    </div>
+    <div class="section-body">
+      <div class="form-row">
+        <label for="retailer">Retailer</label>
+        <select id="retailer" name="RETAILER">
+          <option value="amber">Amber Electric</option>
+          <option value="custom">Custom (CSV pricing file)</option>
+        </select>
+      </div>
+
+      <div class="custom-pricing-area" id="customPricingArea">
+        <div style="font-size:13px;color:#e1e4e8;margin-bottom:8px;font-weight:500;">Custom Pricing Schedule</div>
+        <div class="csv-format">
+          Upload a CSV file with three columns: <code>time</code> (24h format), <code>import_price</code> (c/kWh), <code>export_price</code> (c/kWh).<br>
+          Prices are applied as a step function &mdash; each entry holds until the next time is reached.
+        </div>
+        <div class="file-upload">
+          <button type="button" class="btn-upload" id="btnUploadCsv">Choose CSV File...</button>
+          <input type="file" id="csvFileInput" accept=".csv">
+          <span class="file-name" id="csvFileName">No file selected</span>
+        </div>
+        <div class="csv-preview" id="csvPreview">
+          <table>
+            <thead><tr><th>Time</th><th>Import (c/kWh)</th><th>Export (c/kWh)</th></tr></thead>
+            <tbody id="csvPreviewBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Amber Electric -->
+  <div class="section" id="amberSection">
+    <div class="section-header">
+      <span class="icon">&#127793;</span>
+      <h2>Amber Electric</h2>
+    </div>
+    <div class="section-body">
+      <div class="form-row">
+        <label for="AMBER_API_KEY">API Key</label>
+        <input type="password" id="AMBER_API_KEY" name="AMBER_API_KEY" placeholder="psk_...">
+      </div>
+      <div class="form-row">
+        <label for="AMBER_SITE_ID">Site ID</label>
+        <input type="text" id="AMBER_SITE_ID" name="AMBER_SITE_ID" placeholder="Auto-discovered if empty">
+      </div>
+      <div class="form-row"><div class="hint">Leave Site ID empty to auto-discover from your API key.</div></div>
+    </div>
+  </div>
+
+  <!-- Solcast -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">&#9728;&#65039;</span>
+      <h2>Solcast (Solar Forecast)</h2>
+    </div>
+    <div class="section-body">
+      <div class="form-row">
+        <label for="SOLCAST_API_KEY">API Key</label>
+        <input type="password" id="SOLCAST_API_KEY" name="SOLCAST_API_KEY">
+      </div>
+      <div class="form-row">
+        <label for="SOLCAST_RESOURCE_ID">Resource ID</label>
+        <input type="text" id="SOLCAST_RESOURCE_ID" name="SOLCAST_RESOURCE_ID">
+      </div>
+    </div>
+  </div>
+
+  <!-- FoxESS Inverter -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">&#128268;</span>
+      <h2>FoxESS Inverter (Modbus TCP)</h2>
+    </div>
+    <div class="section-body">
+      <div class="form-row">
+        <label for="FOXESS_IP">IP Address</label>
+        <input type="text" id="FOXESS_IP" name="FOXESS_IP" placeholder="192.168.1.100">
+      </div>
+      <div class="form-row">
+        <label for="FOXESS_PORT">Port</label>
+        <input type="number" id="FOXESS_PORT" name="FOXESS_PORT" value="502">
+      </div>
+      <div class="form-row">
+        <label for="FOXESS_SLAVE_ID">Slave ID</label>
+        <input type="number" id="FOXESS_SLAVE_ID" name="FOXESS_SLAVE_ID" value="247">
+      </div>
+    </div>
+  </div>
+
+  <!-- Battery -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">&#128267;</span>
+      <h2>Battery Specs</h2>
+    </div>
+    <div class="section-body">
+      <div class="form-row">
+        <label for="BATTERY_CAPACITY_KWH">Capacity (kWh)</label>
+        <input type="number" id="BATTERY_CAPACITY_KWH" name="BATTERY_CAPACITY_KWH" step="0.1">
+      </div>
+      <div class="form-row">
+        <label for="BATTERY_MAX_POWER_KW">Max Power (kW)</label>
+        <input type="number" id="BATTERY_MAX_POWER_KW" name="BATTERY_MAX_POWER_KW" step="0.1">
+      </div>
+      <div class="form-row">
+        <label for="BATTERY_MIN_SOC_PCT">Min SoC (%)</label>
+        <input type="number" id="BATTERY_MIN_SOC_PCT" name="BATTERY_MIN_SOC_PCT" min="0" max="100">
+      </div>
+      <div class="form-row">
+        <label for="BATTERY_EFFICIENCY">Round-trip Efficiency</label>
+        <input type="number" id="BATTERY_EFFICIENCY" name="BATTERY_EFFICIENCY" step="0.01" min="0" max="1">
+      </div>
+      <div class="form-row"><div class="hint">Fraction between 0 and 1. Typical: 0.90 for 90% round-trip.</div></div>
+      <div class="form-row">
+        <label for="BATTERY_COST_AUD">Battery Cost (AUD)</label>
+        <input type="number" id="BATTERY_COST_AUD" name="BATTERY_COST_AUD" step="100">
+      </div>
+      <div class="form-row">
+        <label for="BATTERY_CYCLE_LIFE">Cycle Life</label>
+        <input type="number" id="BATTERY_CYCLE_LIFE" name="BATTERY_CYCLE_LIFE">
+      </div>
+      <div class="form-row"><div class="hint">Used to calculate degradation cost per kWh cycled.</div></div>
+    </div>
+  </div>
+
+  <!-- System -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">&#9881;&#65039;</span>
+      <h2>System</h2>
+    </div>
+    <div class="section-body">
+      <div class="form-row">
+        <label for="SCHEDULER_INTERVAL_SECONDS">Scheduler Interval (s)</label>
+        <input type="number" id="SCHEDULER_INTERVAL_SECONDS" name="SCHEDULER_INTERVAL_SECONDS">
+      </div>
+      <div class="form-row">
+        <label for="LOG_LEVEL">Log Level</label>
+        <select id="LOG_LEVEL" name="LOG_LEVEL">
+          <option value="DEBUG">DEBUG</option>
+          <option value="INFO">INFO</option>
+          <option value="WARNING">WARNING</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="DB_PATH">Database Path</label>
+        <input type="text" id="DB_PATH" name="DB_PATH">
+      </div>
+      <div class="form-row">
+        <label for="TIMEZONE">Timezone</label>
+        <input type="text" id="TIMEZONE" name="TIMEZONE" placeholder="Australia/Brisbane">
+      </div>
+      <div class="form-row-checkbox">
+        <input type="checkbox" id="DRY_RUN" name="DRY_RUN">
+        <label for="DRY_RUN">Dry Run (no Modbus writes to inverter)</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="actions-bar">
+    <button class="btn btn-secondary" id="btnReload">Reload</button>
+    <button class="btn btn-primary" id="btnSave">Save Settings</button>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── All env keys we manage ──────────────────────────────────────
+const ENV_KEYS = [
+  'AMBER_API_KEY', 'AMBER_SITE_ID',
+  'SOLCAST_API_KEY', 'SOLCAST_RESOURCE_ID',
+  'FOXESS_IP', 'FOXESS_PORT', 'FOXESS_SLAVE_ID',
+  'BATTERY_CAPACITY_KWH', 'BATTERY_MAX_POWER_KW', 'BATTERY_MIN_SOC_PCT',
+  'BATTERY_EFFICIENCY', 'BATTERY_COST_AUD', 'BATTERY_CYCLE_LIFE',
+  'SCHEDULER_INTERVAL_SECONDS', 'LOG_LEVEL', 'DB_PATH', 'TIMEZONE', 'DRY_RUN',
+  'RETAILER', 'CUSTOM_PRICING_CSV',
+];
+
+const CHECKBOX_KEYS = ['DRY_RUN'];
+
+// ── Toast ────────────────────────────────────────────────────────
+function showToast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast visible ' + type;
+  setTimeout(() => { el.className = 'toast'; }, 3000);
+}
+
+// ── Load settings from server ────────────────────────────────────
+async function loadSettings() {
+  try {
+    const resp = await fetch('/api/settings');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+
+    for (const key of ENV_KEYS) {
+      const el = document.getElementById(key);
+      if (!el) continue;
+      const val = data[key] || '';
+      if (CHECKBOX_KEYS.includes(key)) {
+        el.checked = val.toLowerCase() === 'true' || val === '1' || val === 'yes';
+      } else if (el.tagName === 'SELECT') {
+        el.value = val;
+      } else {
+        el.value = val;
+      }
+    }
+
+    // Handle retailer dropdown
+    const retailerEl = document.getElementById('retailer');
+    retailerEl.value = data['RETAILER'] || 'amber';
+    updateRetailerUI();
+
+    // Show current CSV file name
+    const csvFile = data['CUSTOM_PRICING_CSV'] || '';
+    if (csvFile) {
+      const nameEl = document.getElementById('csvFileName');
+      nameEl.textContent = csvFile;
+      nameEl.classList.add('has-file');
+      loadCsvPreview();
+    }
+
+  } catch (err) {
+    showToast('Failed to load settings: ' + err.message, 'error');
+  }
+}
+
+// ── Save settings to server ──────────────────────────────────────
+async function saveSettings() {
+  const settings = {};
+
+  for (const key of ENV_KEYS) {
+    if (key === 'RETAILER' || key === 'CUSTOM_PRICING_CSV') continue;
+    const el = document.getElementById(key);
+    if (!el) continue;
+    if (CHECKBOX_KEYS.includes(key)) {
+      settings[key] = el.checked ? 'true' : 'false';
+    } else {
+      settings[key] = el.value;
+    }
+  }
+
+  // Retailer
+  settings['RETAILER'] = document.getElementById('retailer').value;
+
+  // Custom pricing CSV (stored from upload, don't overwrite if not changed)
+  const csvNameEl = document.getElementById('csvFileName');
+  if (csvNameEl.classList.contains('has-file')) {
+    settings['CUSTOM_PRICING_CSV'] = csvNameEl.textContent;
+  } else {
+    settings['CUSTOM_PRICING_CSV'] = '';
+  }
+
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      showToast('Settings saved. Restart the system to apply changes.', 'success');
+    } else {
+      showToast('Save failed: ' + (result.error || 'Unknown error'), 'error');
+    }
+  } catch (err) {
+    showToast('Save failed: ' + err.message, 'error');
+  }
+}
+
+// ── Retailer selection ───────────────────────────────────────────
+function updateRetailerUI() {
+  const val = document.getElementById('retailer').value;
+  const customArea = document.getElementById('customPricingArea');
+  const amberSection = document.getElementById('amberSection');
+
+  if (val === 'custom') {
+    customArea.classList.add('visible');
+    amberSection.style.opacity = '0.4';
+    amberSection.style.pointerEvents = 'none';
+  } else {
+    customArea.classList.remove('visible');
+    amberSection.style.opacity = '1';
+    amberSection.style.pointerEvents = 'auto';
+  }
+}
+
+document.getElementById('retailer').addEventListener('change', updateRetailerUI);
+
+// ── CSV file upload ──────────────────────────────────────────────
+document.getElementById('btnUploadCsv').addEventListener('click', () => {
+  document.getElementById('csvFileInput').click();
+});
+
+document.getElementById('csvFileInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const resp = await fetch('/api/settings/upload-pricing', {
+      method: 'POST',
+      body: formData,
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      const nameEl = document.getElementById('csvFileName');
+      nameEl.textContent = result.filename;
+      nameEl.classList.add('has-file');
+      showToast('Pricing file uploaded: ' + result.filename, 'success');
+
+      // Show preview
+      if (result.preview) {
+        showCsvPreview(result.preview);
+      }
+    } else {
+      showToast('Upload failed: ' + (result.error || 'Unknown error'), 'error');
+    }
+  } catch (err) {
+    showToast('Upload failed: ' + err.message, 'error');
+  }
+});
+
+function showCsvPreview(rows) {
+  const tbody = document.getElementById('csvPreviewBody');
+  tbody.innerHTML = '';
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${row.time}</td><td>${row.import_price}</td><td>${row.export_price}</td>`;
+    tbody.appendChild(tr);
+  }
+  document.getElementById('csvPreview').classList.add('visible');
+}
+
+async function loadCsvPreview() {
+  try {
+    const resp = await fetch('/api/settings/pricing-preview');
+    if (!resp.ok) return;
+    const result = await resp.json();
+    if (result.ok && result.preview) {
+      showCsvPreview(result.preview);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// ── Button handlers ──────────────────────────────────────────────
+document.getElementById('btnSave').addEventListener('click', saveSettings);
+document.getElementById('btnReload').addEventListener('click', loadSettings);
+
+// ── Init ─────────────────────────────────────────────────────────
+loadSettings();
+</script>
+</body>
+</html>
