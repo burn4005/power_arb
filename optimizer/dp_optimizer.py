@@ -19,6 +19,7 @@ class OptimizationResult:
     action: Action
     expected_profit_cents: float  # total expected profit over horizon
     schedule: list[tuple[str, Action, float]]  # (timestamp, action, marginal_profit) for each period
+    soc_trajectory: list[float]  # predicted SoC (kWh) at each period
     reason: str
 
 
@@ -28,8 +29,8 @@ class DPOptimizer:
     Finds the sequence of battery actions over the next 48 hours that
     maximizes total profit (export revenue - import cost - degradation).
 
-    Complexity: O(S * T * A) where S=SoC states (~85), T=periods (~96),
-    A=actions (5). Total ~40,000 evaluations, runs in <100ms.
+    Complexity: O(S * T * A) where S=SoC states (~85), T=periods (~576),
+    A=actions (5). Total ~245,000 evaluations, runs in ~60ms.
     """
 
     def __init__(self):
@@ -45,15 +46,15 @@ class DPOptimizer:
     def optimize(
         self,
         current_soc_kwh: float,
-        import_prices: list[float],   # cents/kWh for each 30-min period
-        export_prices: list[float],   # cents/kWh for each 30-min period
+        import_prices: list[float],   # cents/kWh for each period
+        export_prices: list[float],   # cents/kWh for each period
         solar_forecast: list[float],  # kW average for each period
         load_forecast: list[float],   # kW average for each period
         timestamps: list[str] | None = None,
     ) -> OptimizationResult:
         """Run DP optimization and return the best action for now.
 
-        All input lists must be the same length (number of 30-min periods).
+        All input lists must be the same length (number of periods).
         """
         n_periods = len(import_prices)
         if n_periods == 0:
@@ -61,6 +62,7 @@ class DPOptimizer:
                 action=Action.SELF_USE,
                 expected_profit_cents=0,
                 schedule=[],
+                soc_trajectory=[],
                 reason="No forecast data available",
             )
 
@@ -112,10 +114,12 @@ class DPOptimizer:
         )
 
         schedule = []
+        soc_trajectory = []
         soc = self.soc_levels[s_idx]
         total_profit = V[0][s_idx]
 
         for t in range(n_periods):
+            soc_trajectory.append(float(soc))
             action = actions[policy[t][s_idx]]
             inputs = PeriodInputs(
                 solar_kw=solar_forecast[t],
@@ -166,6 +170,7 @@ class DPOptimizer:
             action=current_action,
             expected_profit_cents=total_profit,
             schedule=schedule,
+            soc_trajectory=soc_trajectory,
             reason=reason,
         )
 

@@ -11,6 +11,8 @@ import bisect
 from collections import defaultdict
 from datetime import datetime, timedelta
 
+from optimizer.battery_model import PERIOD_MINUTES, PERIODS_PER_HOUR
+
 # Default spot price profile (c/kWh) by hour for QLD.
 # Used during warm-up when insufficient history exists.
 # Derived from typical QLD AEMO patterns: low overnight, solar dip midday,
@@ -83,11 +85,11 @@ class PriceForecaster:
         m = int(current_time[14:16])
         dt = datetime(year, month, day, h, m)
 
-        periods = hours * 2  # 30-min intervals
+        periods = hours * PERIODS_PER_HOUR
         results = []
 
         for i in range(periods):
-            ts = dt + timedelta(minutes=30 * i)
+            ts = dt + timedelta(minutes=PERIOD_MINUTES * i)
             day_type = "weekend" if ts.weekday() >= 5 else "weekday"
             slot = ts.hour * 2 + (1 if ts.minute >= 30 else 0)
 
@@ -123,7 +125,7 @@ class PriceForecaster:
         lo = bisect.bisect_left(self._sorted_keys, start_key)
         hi = bisect.bisect_left(self._sorted_keys, end_key)
 
-        if hi - lo < self.MIN_DAYS * 48:
+        if hi - lo < self.MIN_DAYS * PERIODS_PER_HOUR * 24:
             return None
 
         # Group by (day_type, half_hour_slot)

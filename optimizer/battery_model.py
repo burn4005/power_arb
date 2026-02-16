@@ -8,7 +8,7 @@ from optimizer.actions import Action
 
 @dataclass
 class PeriodInputs:
-    """External inputs for a single 30-minute period."""
+    """External inputs for a single period."""
     solar_kw: float         # forecast solar generation (kW average)
     load_kw: float          # forecast home consumption (kW average)
     import_price: float     # cents/kWh to buy from grid
@@ -25,7 +25,12 @@ class PeriodResult:
     net_cost_cents: float   # positive = cost, negative = profit
 
 
-PERIOD_HOURS = 0.5  # 30-minute intervals
+PERIOD_MINUTES = 5
+PERIOD_HOURS = PERIOD_MINUTES / 60          # 1/12 (~0.0833)
+PERIODS_PER_HOUR = 60 // PERIOD_MINUTES     # 12
+PERIODS_PER_DAY = 24 * PERIODS_PER_HOUR     # 288
+HORIZON_HOURS = 48
+HORIZON_PERIODS = HORIZON_HOURS * PERIODS_PER_HOUR  # 576
 
 
 class BatteryModel:
@@ -44,10 +49,7 @@ class BatteryModel:
     def apply_action(
         self, soc_kwh: float, action: Action, inputs: PeriodInputs
     ) -> PeriodResult:
-        """Simulate one 30-min period and return the result.
-
-        This is the core transition function used by the DP optimizer.
-        """
+        """Simulate one period and return the result."""
         solar_kwh = inputs.solar_kw * PERIOD_HOURS
         load_kwh = inputs.load_kw * PERIOD_HOURS
         max_charge_kwh = self.max_power * PERIOD_HOURS   # 5 kWh per period at 10kW

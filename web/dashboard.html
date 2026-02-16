@@ -1,0 +1,1140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Battery Arbitrage Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e1e4e8;
+    overflow-x: hidden;
+  }
+
+  .header {
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #58a6ff;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .header .updated {
+    font-size: 13px;
+    color: #8b949e;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .status-dot.ok { background: #3fb950; }
+  .status-dot.stale { background: #d29922; }
+  .status-dot.error { background: #f85149; }
+
+  .stale-banner {
+    background: #4d3800;
+    color: #e3b341;
+    padding: 8px 24px;
+    font-size: 13px;
+    display: none;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid #6e5000;
+  }
+  .stale-banner.visible { display: flex; }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 24px 6px;
+  }
+  .section-title {
+    font-size: 11px;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+  }
+
+  .view-selector {
+    display: flex;
+    gap: 4px;
+  }
+  .view-selector button {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #8b949e;
+    border-radius: 4px;
+    padding: 3px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .view-selector button:hover { background: #30363d; color: #e1e4e8; }
+  .view-selector button.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+
+  .stats-bar {
+    display: grid;
+    gap: 10px;
+    padding: 0 24px 12px;
+  }
+  .stats-bar.cols-8 { grid-template-columns: repeat(8, 1fr); }
+  .stats-bar.cols-4 { grid-template-columns: repeat(4, 1fr); }
+
+  .stat-card {
+    background: #1c2128;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .stat-card .label {
+    font-size: 11px;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .stat-card .value {
+    font-size: 20px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-card .sub {
+    font-size: 11px;
+    color: #8b949e;
+    margin-top: 2px;
+  }
+  .stat-card .value.positive { color: #3fb950; }
+  .stat-card .value.negative { color: #f85149; }
+
+  .chart-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 0 24px 8px;
+  }
+  .chart-full {
+    padding: 0 24px 8px;
+  }
+  .chart-container {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 12px;
+    position: relative;
+    height: 220px;
+  }
+  .chart-container.small { height: 160px; }
+  .chart-container canvas {
+    width: 100% !important;
+    max-height: 100%;
+  }
+  .chart-title {
+    font-size: 12px;
+    color: #8b949e;
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+
+  .action-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .badge-GRID_CHARGE { background: #0d419d; color: #79c0ff; }
+  .badge-SELF_USE { background: #0d4228; color: #56d364; }
+  .badge-HOLD { background: #4d3800; color: #e3b341; }
+  .badge-DISCHARGE_GRID { background: #5a1a1a; color: #ff7b72; }
+
+  .soc-bar-container {
+    width: 100%;
+    height: 8px;
+    background: #21262d;
+    border-radius: 4px;
+    margin-top: 6px;
+    overflow: hidden;
+  }
+  .soc-bar-fill {
+    height: 100%;
+    background: #3fb950;
+    border-radius: 4px;
+    transition: width 0.5s ease;
+  }
+
+  .health-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 4px;
+  }
+  .health-dot.ok { background: #3fb950; }
+  .health-dot.warn { background: #d29922; }
+  .health-dot.error { background: #f85149; }
+
+  .reason-text {
+    font-size: 11px;
+    color: #8b949e;
+    margin-top: 4px;
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .override-panel {
+    background: #1c2128;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 12px 16px;
+  }
+  .override-panel .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .override-panel .panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e1e4e8;
+  }
+  .override-status {
+    font-size: 11px;
+    color: #8b949e;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .override-status .active-label {
+    color: #d29922;
+    font-weight: 600;
+  }
+  .override-buttons {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .override-buttons button {
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid #30363d;
+    background: #21262d;
+    color: #c9d1d9;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .override-buttons button:hover {
+    background: #30363d;
+    border-color: #484f58;
+  }
+  .override-buttons button.active-override {
+    border-width: 2px;
+  }
+  .override-buttons button.btn-AUTO { }
+  .override-buttons button.btn-AUTO.active-override {
+    background: #1c2128; border-color: #3fb950; color: #3fb950;
+  }
+  .override-buttons button.btn-GRID_CHARGE.active-override {
+    background: #0d419d; border-color: #58a6ff; color: #79c0ff;
+  }
+  .override-buttons button.btn-SELF_USE.active-override {
+    background: #0d4228; border-color: #3fb950; color: #56d364;
+  }
+  .override-buttons button.btn-HOLD.active-override {
+    background: #4d3800; border-color: #d29922; color: #e3b341;
+  }
+  .override-buttons button.btn-DISCHARGE_GRID.active-override {
+    background: #5a1a1a; border-color: #f85149; color: #ff7b72;
+  }
+  .override-duration {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: 8px;
+  }
+  .override-duration label {
+    font-size: 11px;
+    color: #8b949e;
+  }
+  .override-duration select {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .override-info {
+    font-size: 11px;
+    color: #8b949e;
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .override-info .expires-time {
+    color: #d29922;
+  }
+  .override-info .optimizer-rec {
+    color: #58a6ff;
+  }
+
+  #loading {
+    position: fixed;
+    inset: 0;
+    background: #0f1117;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    color: #8b949e;
+    z-index: 100;
+    gap: 12px;
+  }
+  #loading .sub-msg {
+    font-size: 13px;
+    color: #484f58;
+  }
+
+  @media (max-width: 1200px) {
+    .stats-bar.cols-8 { grid-template-columns: repeat(4, 2fr); }
+    .chart-row { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 768px) {
+    .stats-bar.cols-8 { grid-template-columns: repeat(2, 1fr); }
+    .stats-bar.cols-4 { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div id="loadingMsg">Connecting to dashboard...</div>
+  <div class="sub-msg" id="loadingSub"></div>
+</div>
+
+<div class="header">
+  <h1><span class="status-dot ok" id="statusDot"></span> Battery Arbitrage Monitor</h1>
+  <div class="updated">Last updated: <span id="lastUpdated">--:--:--</span></div>
+</div>
+
+<div class="stale-banner" id="staleBanner">
+  Data may be stale — last update was more than 10 minutes ago. The system may be offline.
+</div>
+
+<!-- Live Stats -->
+<div class="section-header"><div class="section-title">Live Status</div></div>
+<div class="stats-bar cols-8">
+  <div class="stat-card">
+    <div class="label">PV Generation</div>
+    <div class="value" id="pvPower">--</div>
+    <div class="sub">kW</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Home Load</div>
+    <div class="value" id="loadPower">--</div>
+    <div class="sub">kW</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Grid</div>
+    <div class="value" id="gridPower">--</div>
+    <div class="sub" id="gridDir">kW</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Battery SoC</div>
+    <div class="value" id="socPct">--</div>
+    <div class="sub" id="socKwh">-- kWh</div>
+    <div class="soc-bar-container"><div class="soc-bar-fill" id="socBar" style="width:0%"></div></div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Battery Power</div>
+    <div class="value" id="battPower">--</div>
+    <div class="sub" id="battDir">kW</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Import Price</div>
+    <div class="value" id="importPrice">--</div>
+    <div class="sub">c/kWh</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Export Price</div>
+    <div class="value" id="exportPrice">--</div>
+    <div class="sub">c/kWh</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Current Action</div>
+    <div class="value"><span class="action-badge" id="actionBadge">--</span></div>
+    <div class="reason-text" id="actionReason">--</div>
+  </div>
+</div>
+
+<!-- Manual Override -->
+<div class="section-header"><div class="section-title">Manual Override</div></div>
+<div style="padding:0 24px 12px;">
+  <div class="override-panel">
+    <div class="panel-header">
+      <div class="panel-title">Inverter Mode Control</div>
+      <div class="override-status" id="overrideStatus">
+        <span class="health-dot ok"></span> AUTO (optimizer controlling)
+      </div>
+    </div>
+    <div class="override-buttons" id="overrideButtons">
+      <button class="btn-AUTO active-override" data-mode="AUTO">AUTO</button>
+      <button class="btn-GRID_CHARGE" data-mode="GRID_CHARGE">GRID CHARGE</button>
+      <button class="btn-SELF_USE" data-mode="SELF_USE">SELF USE</button>
+      <button class="btn-HOLD" data-mode="HOLD">HOLD</button>
+      <button class="btn-DISCHARGE_GRID" data-mode="DISCHARGE_GRID">DISCHARGE</button>
+      <div class="override-duration">
+        <label for="overrideDuration">Duration:</label>
+        <select id="overrideDuration">
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60" selected>1 hour</option>
+          <option value="120">2 hours</option>
+          <option value="240">4 hours</option>
+          <option value="480">8 hours</option>
+        </select>
+      </div>
+    </div>
+    <div class="override-info" id="overrideInfo" style="display:none;">
+      <span>Expires: <span class="expires-time" id="overrideExpires">--</span></span>
+      <span>|</span>
+      <span>Optimizer recommends: <span class="optimizer-rec" id="optimizerRec">--</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- Timeline Charts -->
+<div class="section-header">
+  <div class="section-title">Timeline</div>
+  <div class="view-selector" id="viewSelector">
+    <button data-hours="3">3h</button>
+    <button data-hours="6">6h</button>
+    <button data-hours="12" class="active">12h</button>
+    <button data-hours="24">24h</button>
+    <button data-hours="48">48h</button>
+  </div>
+</div>
+<div class="chart-row">
+  <div class="chart-container">
+    <div class="chart-title">Prices (c/kWh)</div>
+    <canvas id="chartPrices"></canvas>
+  </div>
+  <div class="chart-container">
+    <div class="chart-title">Solar + Load (kW)</div>
+    <canvas id="chartSolarLoad"></canvas>
+  </div>
+</div>
+<div class="chart-row">
+  <div class="chart-container">
+    <div class="chart-title">Battery SoC (kWh)</div>
+    <canvas id="chartSoc"></canvas>
+  </div>
+  <div class="chart-container">
+    <div class="chart-title">Battery Temperature</div>
+    <canvas id="chartTemp"></canvas>
+  </div>
+</div>
+<div class="chart-full">
+  <div class="chart-container">
+    <div class="chart-title">Energy Flow (kW) — PV +ve, Battery charge +ve, Grid import -ve, House -ve</div>
+    <canvas id="chartEnergyFlow"></canvas>
+  </div>
+</div>
+<div class="chart-full">
+  <div class="chart-container small">
+    <div class="chart-title">Schedule Profit (c per period)</div>
+    <canvas id="chartProfit"></canvas>
+  </div>
+</div>
+
+<!-- Financial -->
+<div class="section-header"><div class="section-title">Financials (Today)</div></div>
+<div class="stats-bar cols-4">
+  <div class="stat-card">
+    <div class="label">Today's Savings</div>
+    <div class="value" id="todaySavings">--</div>
+    <div class="sub">vs no-battery baseline</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Import Cost</div>
+    <div class="value" id="todayImport">--</div>
+    <div class="sub">grid import today</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Export Revenue</div>
+    <div class="value" id="todayExport">--</div>
+    <div class="sub">grid export today</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">48h Horizon Profit</div>
+    <div class="value" id="horizonProfit">--</div>
+    <div class="sub">expected from optimizer</div>
+  </div>
+</div>
+
+<!-- Battery Health -->
+<div class="section-header"><div class="section-title">Battery Health</div></div>
+<div class="stats-bar cols-4">
+  <div class="stat-card">
+    <div class="label">Cycles Today</div>
+    <div class="value" id="cyclesToday">--</div>
+    <div class="sub">equivalent full cycles</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Capacity</div>
+    <div class="value" id="battCapacity">--</div>
+    <div class="sub" id="battMinSoc">Min SoC: --</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Max Power</div>
+    <div class="value" id="battMaxPower">--</div>
+    <div class="sub">kW charge/discharge</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Battery Temp</div>
+    <div class="value" id="battTemp">--</div>
+    <div class="sub">degrees C</div>
+  </div>
+</div>
+
+<!-- System Health -->
+<div class="section-header"><div class="section-title">System Health</div></div>
+<div class="stats-bar cols-4">
+  <div class="stat-card">
+    <div class="label">Amber API</div>
+    <div class="value" id="amberStatus"><span class="health-dot ok"></span>--</div>
+    <div class="sub" id="amberSub">-- prices loaded</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Solcast API</div>
+    <div class="value" id="solcastStatus"><span class="health-dot ok"></span>--</div>
+    <div class="sub" id="solcastSub">-- calls today</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">FoxESS Inverter</div>
+    <div class="value" id="foxessStatus"><span class="health-dot ok"></span>--</div>
+    <div class="sub" id="foxessSub">--</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Optimizer</div>
+    <div class="value" id="optimizerStatus">--</div>
+    <div class="sub" id="optimizerSub">--</div>
+  </div>
+</div>
+
+<!-- Errors -->
+<div class="section-header"><div class="section-title">Recent Errors</div></div>
+<div style="padding:0 24px 24px;">
+  <div class="stat-card">
+    <div id="errorsList" style="font-size:12px;max-height:80px;overflow-y:auto;">No errors</div>
+  </div>
+</div>
+
+<script>
+// ── Constants ───────────────────────────────────────────────────
+const ACTION_COLORS = {
+  GRID_CHARGE: '#58a6ff',
+  SELF_USE: '#3fb950',
+  HOLD: '#d29922',
+  DISCHARGE_GRID: '#f85149',
+};
+
+let viewHours = 12;
+let lastData = null;
+
+// ── Chart defaults ──────────────────────────────────────────────
+function chartDefaults() {
+  return {
+    animation: false,
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { labels: { color: '#8b949e', boxWidth: 12, font: { size: 11 } } },
+      tooltip: { backgroundColor: '#1c2128', titleColor: '#e1e4e8', bodyColor: '#e1e4e8',
+                 borderColor: '#30363d', borderWidth: 1 },
+    },
+    scales: {
+      x: {
+        ticks: { color: '#484f58', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 14 },
+        grid: { color: '#21262d' },
+      },
+      y: {
+        ticks: { color: '#484f58', font: { size: 10 } },
+        grid: { color: '#21262d' },
+      },
+    },
+  };
+}
+
+function nowAnnotation(nowIdx) {
+  return {
+    now: {
+      type: 'line', xMin: nowIdx, xMax: nowIdx, borderColor: '#8b949e',
+      borderWidth: 1, borderDash: [3, 3],
+      label: { display: true, content: 'Now', color: '#8b949e', font: { size: 10 },
+               position: 'start', backgroundColor: 'transparent' },
+    },
+  };
+}
+
+// ── Helpers ──────────────────────────────────────────────────────
+function formatTime(isoStr) {
+  if (!isoStr) return '--';
+  const d = new Date(isoStr);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtLabel(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  const h = d.getHours().toString().padStart(2, '0');
+  const m = d.getMinutes().toString().padStart(2, '0');
+  // Include day for views >= 24h
+  if (viewHours >= 24) {
+    const day = d.getDate();
+    const mon = (d.getMonth() + 1).toString().padStart(2, '0');
+    return `${day}/${mon} ${h}:${m}`;
+  }
+  return `${h}:${m}`;
+}
+
+function centsToAud(c) {
+  const aud = Math.abs(c) / 100;
+  const prefix = c < 0 ? '-' : '';
+  return prefix + '$' + aud.toFixed(2);
+}
+
+// ── Build merged timeline ───────────────────────────────────────
+function buildTimeline(D) {
+  const hist = D.history || {};
+  const fc = D.forecast || {};
+  const now = new Date(D.updated_at).getTime();
+
+  const windowMs = viewHours * 3600000;
+  const windowStart = now - windowMs;
+  const windowEnd = now + windowMs;
+
+  // Parse history timestamps, find window
+  const hTs = hist.timestamps || [];
+  let hStart = 0;
+  for (let i = 0; i < hTs.length; i++) {
+    if (new Date(hTs[i]).getTime() >= windowStart) { hStart = i; break; }
+    if (i === hTs.length - 1) hStart = hTs.length; // all before window
+  }
+  const hSliceTs = hTs.slice(hStart);
+  const hLen = hSliceTs.length;
+
+  // Parse forecast timestamps, find window
+  const fTs = fc.timestamps || [];
+  let fEnd = fTs.length;
+  for (let i = 0; i < fTs.length; i++) {
+    if (new Date(fTs[i]).getTime() > windowEnd) { fEnd = i; break; }
+  }
+  const fSliceTs = fTs.slice(0, fEnd);
+  const fLen = fSliceTs.length;
+
+  // Combined labels
+  const labels = [...hSliceTs.map(fmtLabel), ...fSliceTs.map(fmtLabel)];
+  const nowIdx = hLen;
+
+  // Downsample if too many points
+  const maxPts = 300;
+  const total = hLen + fLen;
+  const step = total > maxPts ? Math.ceil(total / maxPts) : 1;
+
+  function ds(arr) {
+    if (step === 1) return arr;
+    const out = [];
+    for (let i = 0; i < arr.length; i += step) out.push(arr[i]);
+    return out;
+  }
+
+  function dsIdx(idx) {
+    return Math.round(idx / step);
+  }
+
+  // Helper to slice + concat history and forecast arrays
+  function merge(histArr, fcArr, histDefault, fcDefault) {
+    const h = histArr ? histArr.slice(hStart, hStart + hLen) : new Array(hLen).fill(histDefault);
+    const f = fcArr ? fcArr.slice(0, fEnd) : new Array(fLen).fill(fcDefault);
+    return ds([...h, ...f]);
+  }
+
+  // History-only array (forecast portion is null)
+  function histOnly(histArr) {
+    const h = histArr ? histArr.slice(hStart, hStart + hLen) : new Array(hLen).fill(null);
+    return ds([...h, ...new Array(fLen).fill(null)]);
+  }
+
+  // Forecast-only array (history portion is null)
+  function fcOnly(fcArr) {
+    const f = fcArr ? fcArr.slice(0, fEnd) : new Array(fLen).fill(null);
+    return ds([...new Array(hLen).fill(null), ...f]);
+  }
+
+  return {
+    labels: ds(labels),
+    nowIdx: dsIdx(nowIdx),
+    hLen, fLen, hStart, fEnd, step,
+    merge, histOnly, fcOnly, ds,
+  };
+}
+
+// ── Chart instances ─────────────────────────────────────────────
+let chartPrices, chartSolarLoad, chartSoc, chartTemp, chartEnergyFlow, chartProfit;
+
+function createCharts() {
+  // Prices
+  const optsP = chartDefaults();
+  optsP.plugins.annotation = { annotations: {} };
+  chartPrices = new Chart(document.getElementById('chartPrices').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Import (Amber)', data: [], borderColor: '#f85149', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+      { label: 'Import (dampened)', data: [], borderColor: '#f8514980', borderWidth: 1.5, pointRadius: 0, tension: 0.1, borderDash: [4, 3] },
+      { label: 'Export (Amber)', data: [], borderColor: '#3fb950', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+      { label: 'Export (dampened)', data: [], borderColor: '#3fb95080', borderWidth: 1.5, pointRadius: 0, tension: 0.1, borderDash: [4, 3] },
+    ]},
+    options: optsP,
+  });
+
+  // Solar + Load
+  const optsSL = chartDefaults();
+  optsSL.plugins.annotation = { annotations: {} };
+  chartSolarLoad = new Chart(document.getElementById('chartSolarLoad').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Solar', data: [], borderColor: '#f0c000', borderWidth: 1.5, pointRadius: 0, tension: 0.2 },
+      { label: 'Solar P10', data: [], borderColor: 'transparent', backgroundColor: 'rgba(240,192,0,0.15)', pointRadius: 0, fill: '+1' },
+      { label: 'Solar P90', data: [], borderColor: 'transparent', pointRadius: 0 },
+      { label: 'Load', data: [], borderColor: '#f0883e', borderWidth: 1.5, pointRadius: 0, tension: 0.2, borderDash: [4, 2] },
+    ]},
+    options: optsSL,
+  });
+
+  // SoC
+  const optsSoc = chartDefaults();
+  optsSoc.plugins.annotation = { annotations: {} };
+  optsSoc.scales.y = { ...optsSoc.scales.y, min: 0 };
+  chartSoc = new Chart(document.getElementById('chartSoc').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'SoC (actual)', data: [], borderColor: '#58a6ff', borderWidth: 2, pointRadius: 0, tension: 0.2,
+        fill: true, backgroundColor: 'rgba(88,166,255,0.08)' },
+      { label: 'SoC (predicted)', data: [], borderColor: '#58a6ff', borderWidth: 2, pointRadius: 0, tension: 0.1,
+        borderDash: [5, 3], segment: {
+          borderColor: ctx => {
+            const ac = chartSoc._actionColors;
+            if (!ac || !ac[ctx.p0DataIndex]) return '#58a6ff';
+            return ac[ctx.p0DataIndex];
+          },
+        }},
+    ]},
+    options: optsSoc,
+  });
+  chartSoc._actionColors = [];
+
+  // Temperature
+  const optsT = chartDefaults();
+  optsT.plugins.annotation = { annotations: {} };
+  optsT.plugins.legend = { display: false };
+  chartTemp = new Chart(document.getElementById('chartTemp').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Battery Temp', data: [], borderColor: '#f0883e', borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+        fill: true, backgroundColor: 'rgba(240,136,62,0.08)' },
+    ]},
+    options: optsT,
+  });
+
+  // Energy Flow
+  const optsEF = chartDefaults();
+  optsEF.plugins.annotation = { annotations: {} };
+  optsEF.scales.y = { ...optsEF.scales.y,
+    title: { display: true, text: 'kW', color: '#484f58', font: { size: 10 } },
+  };
+  chartEnergyFlow = new Chart(document.getElementById('chartEnergyFlow').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'PV', data: [], borderColor: '#f0c000', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
+        fill: true, backgroundColor: 'rgba(240,192,0,0.10)' },
+      { label: 'Battery', data: [], borderColor: '#58a6ff', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
+        fill: true, backgroundColor: 'rgba(88,166,255,0.10)' },
+      { label: 'Grid', data: [], borderColor: '#f85149', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
+        fill: true, backgroundColor: 'rgba(248,81,73,0.10)' },
+      { label: 'House', data: [], borderColor: '#f0883e', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
+        fill: true, backgroundColor: 'rgba(240,136,62,0.10)' },
+    ]},
+    options: optsEF,
+  });
+
+  // Schedule Profit
+  const optsPr = chartDefaults();
+  optsPr.plugins.annotation = { annotations: {} };
+  chartProfit = new Chart(document.getElementById('chartProfit').getContext('2d'), {
+    type: 'bar',
+    data: { labels: [], datasets: [
+      { label: 'Profit', data: [], backgroundColor: [] },
+    ]},
+    options: optsPr,
+  });
+}
+
+// ── Update dashboard ────────────────────────────────────────────
+function updateDashboard(D) {
+  const live = D.live;
+  const fc = D.forecast || {};
+  const fin = D.financial;
+  const bh = D.battery_health;
+  const sh = D.system_health;
+  const hist = D.history || {};
+
+  // Header
+  const updatedAt = new Date(D.updated_at);
+  document.getElementById('lastUpdated').textContent = updatedAt.toLocaleTimeString();
+  const ageSec = (Date.now() - updatedAt.getTime()) / 1000;
+  const dot = document.getElementById('statusDot');
+  const banner = document.getElementById('staleBanner');
+  if (ageSec > 600) { dot.className = 'status-dot error'; banner.classList.add('visible'); }
+  else if (ageSec > 300) { dot.className = 'status-dot stale'; banner.classList.remove('visible'); }
+  else { dot.className = 'status-dot ok'; banner.classList.remove('visible'); }
+
+  // Live stats
+  document.getElementById('pvPower').textContent = live.pv_power_kw.toFixed(2);
+  document.getElementById('loadPower').textContent = live.load_power_kw.toFixed(2);
+
+  const gridVal = live.grid_power_kw;
+  document.getElementById('gridPower').textContent = Math.abs(gridVal).toFixed(2);
+  document.getElementById('gridPower').className = 'value ' + (gridVal > 0.05 ? 'negative' : gridVal < -0.05 ? 'positive' : '');
+  document.getElementById('gridDir').textContent = gridVal > 0.05 ? 'kW importing' : gridVal < -0.05 ? 'kW exporting' : 'kW';
+
+  document.getElementById('socPct').textContent = live.soc_pct.toFixed(0) + '%';
+  document.getElementById('socKwh').textContent = live.soc_kwh.toFixed(1) + ' kWh';
+  document.getElementById('socBar').style.width = live.soc_pct + '%';
+
+  const battVal = live.battery_power_kw;
+  document.getElementById('battPower').textContent = Math.abs(battVal).toFixed(2);
+  document.getElementById('battDir').textContent = battVal > 0.05 ? 'kW charging' : battVal < -0.05 ? 'kW discharging' : 'kW idle';
+
+  document.getElementById('importPrice').textContent = live.import_price_c.toFixed(1) + 'c';
+  document.getElementById('importPrice').className = 'value' + (live.spike_status && live.spike_status !== 'none' ? ' negative' : '');
+  document.getElementById('exportPrice').textContent = live.export_price_c.toFixed(1) + 'c';
+
+  const badge = document.getElementById('actionBadge');
+  badge.textContent = live.action.replace('_', ' ');
+  badge.className = 'action-badge badge-' + live.action;
+  document.getElementById('actionReason').textContent = live.reason;
+
+  // Override state
+  updateOverrideUI(live.override || 'AUTO', live.override_expires);
+  if (live.optimizer_action) {
+    document.getElementById('optimizerRec').textContent = live.optimizer_action.replace('_', ' ');
+  }
+
+  // Financial
+  document.getElementById('todaySavings').textContent = centsToAud(fin.today_savings_c);
+  document.getElementById('todaySavings').className = 'value ' + (fin.today_savings_c >= 0 ? 'positive' : 'negative');
+  document.getElementById('todayImport').textContent = centsToAud(fin.today_import_cost_c);
+  document.getElementById('todayExport').textContent = centsToAud(fin.today_export_revenue_c);
+  document.getElementById('todayExport').className = 'value positive';
+  document.getElementById('horizonProfit').textContent = centsToAud(fin.horizon_profit_c);
+  document.getElementById('horizonProfit').className = 'value ' + (fin.horizon_profit_c >= 0 ? 'positive' : 'negative');
+
+  // Battery health
+  document.getElementById('cyclesToday').textContent = bh.cycles_today.toFixed(2);
+  document.getElementById('battCapacity').textContent = bh.capacity_kwh.toFixed(0) + ' kWh';
+  document.getElementById('battMinSoc').textContent = 'Min SoC: ' + bh.min_soc_kwh.toFixed(1) + ' kWh';
+  document.getElementById('battMaxPower').textContent = bh.max_power_kw.toFixed(1);
+  document.getElementById('battTemp').textContent = live.battery_temp_c.toFixed(1);
+
+  // System health
+  document.getElementById('amberStatus').innerHTML =
+    `<span class="health-dot ${sh.amber_status === 'ok' ? 'ok' : 'error'}"></span>${sh.amber_status.toUpperCase()}`;
+  document.getElementById('amberSub').textContent = sh.amber_prices_count + ' prices loaded';
+
+  document.getElementById('solcastStatus').innerHTML =
+    `<span class="health-dot ${sh.solcast_status === 'ok' ? 'ok' : 'warn'}"></span>${sh.solcast_status.toUpperCase()}`;
+  document.getElementById('solcastSub').textContent =
+    sh.solcast_calls_today + ' calls today, next at ' + sh.solcast_next_scheduled_hour + ':00';
+
+  document.getElementById('foxessStatus').innerHTML =
+    `<span class="health-dot ${sh.foxess_status === 'ok' ? 'ok' : 'error'}"></span>${sh.foxess_status.toUpperCase()}`;
+  document.getElementById('foxessSub').textContent = 'Last read: ' + formatTime(sh.foxess_last_read);
+
+  document.getElementById('optimizerStatus').textContent = sh.optimizer_execution_ms + ' ms';
+  document.getElementById('optimizerSub').textContent =
+    'Last run: ' + formatTime(sh.optimizer_last_run) +
+    (sh.consecutive_failures > 0 ? ' | ' + sh.consecutive_failures + ' failures' : '');
+
+  // Errors
+  const errEl = document.getElementById('errorsList');
+  if (sh.errors && sh.errors.length > 0) {
+    errEl.innerHTML = sh.errors.map(e =>
+      `<div style="color:#f85149;margin-bottom:4px;font-size:11px;">${e}</div>`
+    ).join('');
+  } else {
+    errEl.innerHTML = '<div style="color:#3fb950;">No errors</div>';
+  }
+
+  // ── Timeline charts ─────────────────────────────────────────
+  updateTimelineCharts(D);
+}
+
+function updateTimelineCharts(D) {
+  const hist = D.history || {};
+  const fc = D.forecast || {};
+  const bh = D.battery_health;
+  const t = buildTimeline(D);
+
+  // ── Price chart ──────────────────────────────────────────────
+  // History: raw prices only. Forecast: raw + dampened.
+  const histImport = t.histOnly(hist.import_price_c);
+  const histExport = t.histOnly(hist.export_price_c);
+  const fcRawImport = t.fcOnly(fc.raw_import_price_c);
+  const fcDampImport = t.fcOnly(fc.import_price_c);
+  const fcRawExport = t.fcOnly(fc.raw_export_price_c);
+  const fcDampExport = t.fcOnly(fc.export_price_c);
+
+  // Merge: history raw import + forecast raw import
+  const importRaw = histImport.map((v, i) => v !== null ? v : fcRawImport[i]);
+  const importDamp = fcDampImport; // only forecast
+  const exportRaw = histExport.map((v, i) => v !== null ? v : fcRawExport[i]);
+  const exportDamp = fcDampExport; // only forecast
+
+  chartPrices.data.labels = t.labels;
+  chartPrices.data.datasets[0].data = importRaw;
+  chartPrices.data.datasets[1].data = importDamp;
+  chartPrices.data.datasets[2].data = exportRaw;
+  chartPrices.data.datasets[3].data = exportDamp;
+  chartPrices.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
+  chartPrices.update();
+
+  // ── Solar + Load chart ───────────────────────────────────────
+  // History: actual PV + load. Forecast: solar P50, P10, P90, load.
+  const histPv = t.histOnly(hist.pv_power_kw);
+  const histLoad = t.histOnly(hist.load_power_kw);
+  const fcSolar = t.fcOnly(fc.solar_kw);
+  const fcP10 = t.fcOnly(fc.solar_p10_kw);
+  const fcP90 = t.fcOnly(fc.solar_p90_kw);
+  const fcLoad = t.fcOnly(fc.load_kw);
+
+  const solarMerged = histPv.map((v, i) => v !== null ? v : fcSolar[i]);
+  const loadMerged = histLoad.map((v, i) => v !== null ? v : fcLoad[i]);
+
+  chartSolarLoad.data.labels = t.labels;
+  chartSolarLoad.data.datasets[0].data = solarMerged;
+  chartSolarLoad.data.datasets[1].data = fcP10; // P10 band (forecast only)
+  chartSolarLoad.data.datasets[2].data = fcP90; // P90 band (forecast only)
+  chartSolarLoad.data.datasets[3].data = loadMerged;
+  chartSolarLoad.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
+  chartSolarLoad.update();
+
+  // ── SoC chart ────────────────────────────────────────────────
+  // Two datasets: actual (history) and predicted (forecast)
+  const socActual = t.histOnly(hist.soc_kwh);
+  const socPredicted = t.fcOnly(fc.soc_trajectory_kwh);
+
+  chartSoc.data.labels = t.labels;
+  chartSoc.data.datasets[0].data = socActual;
+  chartSoc.data.datasets[1].data = socPredicted;
+
+  // Color predicted segments by action
+  const actionsArr = t.fcOnly(fc.schedule_action);
+  chartSoc._actionColors = actionsArr.map(a => a ? (ACTION_COLORS[a] || '#58a6ff') : '#58a6ff');
+
+  const annotations = nowAnnotation(t.nowIdx);
+  if (bh) {
+    annotations.capacity = {
+      type: 'line', yMin: bh.capacity_kwh, yMax: bh.capacity_kwh,
+      borderColor: '#f85149', borderWidth: 1, borderDash: [4, 4],
+      label: { display: true, content: 'Capacity', color: '#f85149', font: { size: 10 },
+               position: 'end', backgroundColor: 'transparent' },
+    };
+    annotations.minSoc = {
+      type: 'line', yMin: bh.min_soc_kwh, yMax: bh.min_soc_kwh,
+      borderColor: '#d29922', borderWidth: 1, borderDash: [4, 4],
+      label: { display: true, content: 'Min SoC', color: '#d29922', font: { size: 10 },
+               position: 'end', backgroundColor: 'transparent' },
+    };
+    chartSoc.options.scales.y.max = bh.capacity_kwh * 1.05;
+  }
+  chartSoc.options.plugins.annotation.annotations = annotations;
+  chartSoc.update();
+
+  // ── Temperature chart ────────────────────────────────────────
+  const tempData = t.histOnly(hist.battery_temp_c);
+  chartTemp.data.labels = t.labels;
+  chartTemp.data.datasets[0].data = tempData;
+  chartTemp.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
+  chartTemp.update();
+
+  // ── Energy flow chart ──────────────────────────────────────
+  // Sign convention: PV +ve, Battery charge +ve, Grid import -ve, House -ve
+  const pvFlow = t.histOnly(hist.pv_power_kw);
+  const battFlow = t.histOnly(hist.battery_power_kw);
+  const gridRaw = t.histOnly(hist.grid_power_kw);
+  const loadRaw = t.histOnly(hist.load_power_kw);
+  // Negate grid (import was +ve in raw) and house (consumption was +ve in raw)
+  const gridFlow = gridRaw.map(v => v !== null ? -v : null);
+  const houseFlow = loadRaw.map(v => v !== null ? -v : null);
+
+  chartEnergyFlow.data.labels = t.labels;
+  chartEnergyFlow.data.datasets[0].data = pvFlow;
+  chartEnergyFlow.data.datasets[1].data = battFlow;
+  chartEnergyFlow.data.datasets[2].data = gridFlow;
+  chartEnergyFlow.data.datasets[3].data = houseFlow;
+  const efAnnotations = nowAnnotation(t.nowIdx);
+  efAnnotations.zeroLine = {
+    type: 'line', yMin: 0, yMax: 0, borderColor: '#30363d', borderWidth: 1,
+  };
+  chartEnergyFlow.options.plugins.annotation.annotations = efAnnotations;
+  chartEnergyFlow.update();
+
+  // ── Schedule profit chart ────────────────────────────────────
+  const profitData = t.fcOnly(fc.schedule_profit_c);
+  const profitActions = t.fcOnly(fc.schedule_action);
+  chartProfit.data.labels = t.labels;
+  chartProfit.data.datasets[0].data = profitData;
+  chartProfit.data.datasets[0].backgroundColor = profitActions.map(a =>
+    a ? ((ACTION_COLORS[a] || '#58a6ff') + '99') : 'transparent'
+  );
+  chartProfit.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
+  chartProfit.update();
+}
+
+// ── View selector ───────────────────────────────────────────────
+document.getElementById('viewSelector').addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  document.querySelectorAll('#viewSelector button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  viewHours = parseInt(btn.dataset.hours);
+  if (lastData) updateTimelineCharts(lastData);
+});
+
+// ── Override controls ────────────────────────────────────────────
+document.getElementById('overrideButtons').addEventListener('click', async e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const mode = btn.dataset.mode;
+  const duration = parseInt(document.getElementById('overrideDuration').value);
+  try {
+    const resp = await fetch('/api/override', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, duration_minutes: duration }),
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      updateOverrideUI(result.override, result.expires);
+    } else {
+      alert('Override failed: ' + (result.error || 'Unknown error'));
+    }
+  } catch (err) {
+    console.error('Override request failed:', err);
+    alert('Failed to send override request. Is the server running?');
+  }
+});
+
+function updateOverrideUI(mode, expires) {
+  const buttons = document.querySelectorAll('#overrideButtons button');
+  buttons.forEach(btn => {
+    btn.classList.toggle('active-override', btn.dataset.mode === mode);
+  });
+
+  const statusEl = document.getElementById('overrideStatus');
+  const infoEl = document.getElementById('overrideInfo');
+
+  if (!mode || mode === 'AUTO') {
+    statusEl.innerHTML = '<span class="health-dot ok"></span> AUTO (optimizer controlling)';
+    infoEl.style.display = 'none';
+  } else {
+    statusEl.innerHTML = '<span class="health-dot warn"></span> <span class="active-label">OVERRIDE: ' + mode.replace('_', ' ') + '</span>';
+    infoEl.style.display = 'flex';
+    if (expires) {
+      const exp = new Date(expires);
+      document.getElementById('overrideExpires').textContent = exp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+  }
+}
+
+// ── Polling ─────────────────────────────────────────────────────
+let pollTimer = null;
+const POLL_INTERVAL = 10000;
+let hasEverLoaded = false;
+
+async function poll() {
+  try {
+    const resp = await fetch('dashboard_status.json?t=' + Date.now());
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    hasEverLoaded = true;
+    lastData = data;
+    document.getElementById('loading').style.display = 'none';
+    updateDashboard(data);
+  } catch (err) {
+    console.warn('Poll failed:', err);
+    if (!hasEverLoaded) {
+      const msg = document.getElementById('loadingMsg');
+      const sub = document.getElementById('loadingSub');
+      if (err.message.includes('404') || err.message.includes('HTTP')) {
+        msg.textContent = 'Waiting for first data...';
+        sub.textContent = 'The system has not completed a cycle yet. dashboard_status.json will appear after the first run.';
+      } else {
+        msg.textContent = 'Cannot reach dashboard server';
+        sub.textContent = 'Make sure main.py is running, or serve the web/ folder with: python -m http.server 8081 --directory web';
+      }
+    } else {
+      document.getElementById('statusDot').className = 'status-dot error';
+      document.getElementById('staleBanner').classList.add('visible');
+    }
+  }
+}
+
+function startPolling() {
+  poll();
+  pollTimer = setInterval(poll, POLL_INTERVAL);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  } else {
+    if (!pollTimer) startPolling();
+  }
+});
+
+// ── Init ────────────────────────────────────────────────────────
+createCharts();
+startPolling();
+</script>
+</body>
+</html>

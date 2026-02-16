@@ -39,12 +39,12 @@ class AmberClient:
         return site_id
 
     def fetch_current_and_forecast(self) -> dict[str, list[PriceInterval]]:
-        """Fetch current + 48h forecast prices for import and export channels.
+        """Fetch current + 48h forecast prices at 5-min resolution.
 
         Returns dict with keys 'import' and 'export', each containing a list
         of PriceInterval sorted by timestamp.
         """
-        raw = self.api.get_current_prices(self.site_id, next=96, resolution=30)
+        raw = self.api.get_current_prices(self.site_id, next=576, resolution=5)
         now = datetime.now().isoformat()
 
         import_prices = []
@@ -80,7 +80,7 @@ class AmberClient:
                 channel=channel,
                 forecast_type=forecast_type,
                 spike_status=spike_str,
-                duration_min=interval.duration or 30,
+                duration_min=interval.duration or 5,
             )
 
             if channel == "import":

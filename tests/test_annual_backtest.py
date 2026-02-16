@@ -49,7 +49,7 @@ class TestAnnualBacktest:
             aemo_prices=self.aemo,
             home_usage=self.usage,
             solar_yield=self.solar,
-            reoptimize_every_n=6,  # every 3 hours
+            reoptimize_every_n=36,  # every 3 hours (36 × 5-min)
         )
 
         print("\nRunning annual backtest...", flush=True)

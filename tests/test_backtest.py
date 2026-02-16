@@ -15,7 +15,7 @@ os.environ.setdefault("FOXESS_IP", "127.0.0.1")
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from optimizer.dp_optimizer import DPOptimizer
-from optimizer.battery_model import BatteryModel, PeriodInputs, PERIOD_HOURS
+from optimizer.battery_model import BatteryModel, PeriodInputs, PERIOD_HOURS, PERIODS_PER_DAY, PERIODS_PER_HOUR
 from optimizer.actions import Action
 from backtest.data_loader import (
     load_aemo_prices, load_home_usage, load_solar_yield,
@@ -33,7 +33,7 @@ def simulate_day(
     load: list[float],
     start_soc: float,
 ) -> dict:
-    """Simulate one day (48 half-hour periods) stepping through the optimizer.
+    """Simulate one day stepping through the optimizer period-by-period.
 
     At each period, runs the optimizer with a lookahead window, executes the
     first action, then advances to the next period with updated SoC.
@@ -256,9 +256,11 @@ class TestBacktestWithCSV:
             start_soc=self.min_soc,
         )
 
-        # During solar hours (periods 10-36, ~5am-6pm), the optimizer should
+        # During solar hours (~5am-6pm), the optimizer should
         # prefer self-use or hold over grid-charge, since free solar is available.
-        solar_hours = result["actions"][10:36]
+        solar_start = 5 * PERIODS_PER_HOUR   # hour 5
+        solar_end = 18 * PERIODS_PER_HOUR    # hour 18
+        solar_hours = result["actions"][solar_start:solar_end]
         grid_charge_in_sun = sum(1 for a in solar_hours if a == Action.GRID_CHARGE)
         assert grid_charge_in_sun < len(solar_hours) * 0.5, \
             (f"During solar hours, should mostly use solar not grid-charge. "
@@ -418,15 +420,14 @@ class TestBacktestWithCSV:
 
     def test_data_loaders_produce_correct_counts(self):
         """Verify CSV loaders produce the expected number of periods."""
-        # A full day should have 48 half-hour periods
         prices = get_day_prices(self.aemo, "2024/07/30")
-        assert len(prices) == 48, f"Expected 48 price pairs, got {len(prices)}"
+        assert len(prices) == PERIODS_PER_DAY, f"Expected {PERIODS_PER_DAY} price pairs, got {len(prices)}"
 
         solar = get_day_solar(self.solar, 7, 30)
-        assert len(solar) == 48, f"Expected 48 solar values, got {len(solar)}"
+        assert len(solar) == PERIODS_PER_DAY, f"Expected {PERIODS_PER_DAY} solar values, got {len(solar)}"
 
         load = get_day_load(self.usage, "2024-07-30")
-        assert len(load) == 48, f"Expected 48 load values, got {len(load)}"
+        assert len(load) == PERIODS_PER_DAY, f"Expected {PERIODS_PER_DAY} load values, got {len(load)}"
 
     def test_price_markup_applied(self):
         """Import price should always be exactly 20c above export (AEMO spot)."""

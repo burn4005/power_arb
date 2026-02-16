@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS battery_log (
     battery_power_w REAL NOT NULL,
     grid_power_w REAL NOT NULL,
     pv_power_w REAL NOT NULL,
-    load_power_w REAL NOT NULL
+    load_power_w REAL NOT NULL,
+    battery_temp_c REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_battery_ts ON battery_log(timestamp);
@@ -101,7 +102,16 @@ class Database:
     def _init_db(self):
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Migrations for existing databases
+            self._migrate(conn)
             logger.info("Database initialized at %s", self.db_path)
+
+    def _migrate(self, conn):
+        """Add columns that may be missing from older schemas."""
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(battery_log)").fetchall()}
+        if "battery_temp_c" not in cols:
+            conn.execute("ALTER TABLE battery_log ADD COLUMN battery_temp_c REAL")
+            logger.info("Migrated battery_log: added battery_temp_c column")
 
     @contextmanager
     def _connect(self):
@@ -225,11 +235,20 @@ class Database:
             conn.execute(
                 """INSERT INTO battery_log
                    (timestamp, soc_pct, soc_kwh, battery_power_w,
-                    grid_power_w, pv_power_w, load_power_w)
+                    grid_power_w, pv_power_w, load_power_w, battery_temp_c)
                    VALUES (:timestamp, :soc_pct, :soc_kwh, :battery_power_w,
-                           :grid_power_w, :pv_power_w, :load_power_w)""",
+                           :grid_power_w, :pv_power_w, :load_power_w, :battery_temp_c)""",
                 entry,
             )
+
+    def get_battery_log_since(self, since: str) -> list[dict]:
+        """Get battery log entries since a given timestamp."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM battery_log WHERE timestamp >= ? ORDER BY timestamp",
+                (since,),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     # -- Decision operations --
 
@@ -246,6 +265,15 @@ class Database:
                            :expected_profit, :actual_mode_set)""",
                 decision,
             )
+
+    def get_decisions_since(self, since: str) -> list[dict]:
+        """Get decision records since a given timestamp."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM decisions WHERE timestamp >= ? ORDER BY timestamp",
+                (since,),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     # -- Forecast accuracy operations --
 

@@ -60,6 +60,7 @@ def export_backtest_json(output_path: str = "web/backtest_data.json"):
             "total_cycles": round(result.total_cycles, 1),
             "cycle_life": config.battery.cycle_life,
             "price_forecast_mae_c": round(result.price_forecast_mae_c, 1),
+            "period_minutes": 5,
         },
         "timestamps": [r.timestamp for r in records],
         "soc_kwh": [round(r.soc_kwh, 2) for r in records],

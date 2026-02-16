@@ -38,7 +38,7 @@ class TestBatteryModel:
         """HOLD with load but no solar: imports from grid, battery untouched."""
         result = self.model.apply_action(20.0, Action.HOLD, make_inputs(load_kw=2.0))
         assert result.new_soc_kwh == 20.0
-        assert abs(result.grid_import_kwh - 1.0) < 0.01  # 2kW * 0.5h
+        assert abs(result.grid_import_kwh - 2.0 * PERIOD_HOURS) < 0.01
         assert result.grid_export_kwh == 0.0
 
     def test_hold_with_solar_excess(self):

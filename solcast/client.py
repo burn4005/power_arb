@@ -12,16 +12,19 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.solcast.com.au"
 
-# Solcast free tier: 10 API calls/day. We fetch 5x/day at these AEST hours:
-FETCH_HOURS_AEST = [5, 8, 11, 14, 17]
+# Solcast free tier: 10 API calls/day. Optimized schedule (AEST):
+#   04:00 — overnight call for next-day forecast
+#   06:00-10:00 — hourly during sunrise ramp (most volatile solar period)
+#   12:00, 14:00, 16:00, 18:00 — afternoon updates through sunset
+FETCH_HOURS_AEST = [4, 6, 7, 8, 9, 10, 12, 14, 16, 18]
 
 
 class SolcastClient:
     """Fetches and caches solar production forecasts from Solcast.
 
-    Free tier allows 10 API calls/day. We use 5 for forecasts, leaving
-    headroom for retries. Forecasts are cached in SQLite and served from
-    cache between fetches.
+    Free tier allows 10 API calls/day. All 10 used on an optimized
+    schedule weighted toward sunrise ramp hours. Forecasts are cached
+    in SQLite and served from cache between fetches.
     """
 
     def __init__(self, db: Database):

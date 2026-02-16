@@ -1,6 +1,6 @@
 """Backtest runner for annual simulation of the battery arbitrage optimizer.
 
-Steps through historical data period-by-period:
+Steps through historical data period-by-period (5-minute intervals):
   1. Generates price forecast from past data (no future leakage)
   2. Runs DP optimizer with forecast prices + actual solar/load
   3. Settles each period at actual prices
@@ -20,7 +20,10 @@ from backtest.data_loader import (
 )
 from forecasting.price import PriceForecaster
 from optimizer.dp_optimizer import DPOptimizer
-from optimizer.battery_model import BatteryModel, PeriodInputs, PERIOD_HOURS
+from optimizer.battery_model import (
+    BatteryModel, PeriodInputs, PERIOD_HOURS, PERIOD_MINUTES,
+    PERIODS_PER_HOUR, PERIODS_PER_DAY, HORIZON_PERIODS,
+)
 from optimizer.actions import Action
 import config
 
@@ -148,7 +151,7 @@ class BacktestRunner:
 
     At each re-optimization point, uses PriceForecaster for 48h price
     predictions. Between re-optimizations, follows the planned schedule.
-    Settlement always uses actual historical prices.
+    Settlement always uses actual historical prices at 5-minute resolution.
     """
 
     def __init__(
@@ -157,7 +160,7 @@ class BacktestRunner:
         home_usage: dict[str, float],
         solar_yield: dict[tuple[int, int, int], float],
         import_markup_c: float = IMPORT_MARKUP_C,
-        reoptimize_every_n: int = 1,
+        reoptimize_every_n: int = 6,
         initial_soc_kwh: float | None = None,
         warm_up_days: int = 21,
     ):
@@ -253,16 +256,16 @@ class BacktestRunner:
             load = get_day_load(self.usage, iso_date)
             day_actions: Counter = Counter()
 
-            for hh in range(48):
+            for pp in range(PERIODS_PER_DAY):
                 # Get actual spot price for settlement
-                actual_spot = get_spot_price(self.aemo, date_str, hh)
+                actual_spot = get_spot_price(self.aemo, date_str, pp)
                 actual_import = actual_spot + self.import_markup_c
                 actual_export = actual_spot
 
                 # Re-optimize if needed
                 if periods_since_reopt >= self.reoptimize_every:
-                    h = hh // 2
-                    m = (hh % 2) * 30
+                    h = pp // PERIODS_PER_HOUR
+                    m = (pp % PERIODS_PER_HOUR) * PERIOD_MINUTES
                     current_time = f"{date_str} {h:02d}:{m:02d}"
 
                     # Get forecast prices for 48h horizon
@@ -270,7 +273,7 @@ class BacktestRunner:
 
                     # Build solar + load forecast for horizon
                     solar_fc, load_fc = self._build_horizon_forecast(
-                        date_str, hh, month, day, iso_date
+                        date_str, pp, month, day, iso_date
                     )
 
                     # Truncate all to same length
@@ -312,8 +315,8 @@ class BacktestRunner:
                 # Execute action and settle at actual prices
                 soc_before = soc
                 inputs = PeriodInputs(
-                    solar_kw=solar[hh],
-                    load_kw=load[hh],
+                    solar_kw=solar[pp],
+                    load_kw=load[pp],
                     import_price=actual_import,
                     export_price=actual_export,
                 )
@@ -335,8 +338,8 @@ class BacktestRunner:
                 day_actions[action.name] += 1
 
                 # No-battery baseline for this period
-                solar_kwh = solar[hh] * PERIOD_HOURS
-                load_kwh = load[hh] * PERIOD_HOURS
+                solar_kwh = solar[pp] * PERIOD_HOURS
+                load_kwh = load[pp] * PERIOD_HOURS
                 solar_to_load = min(solar_kwh, load_kwh)
                 base_import = (load_kwh - solar_to_load) * actual_import
                 base_export = (solar_kwh - solar_to_load) * actual_export
@@ -344,14 +347,14 @@ class BacktestRunner:
                 day_summary.baseline_net_cost_c += baseline_cost_c
 
                 # Record period data for visualization
-                h = hh // 2
-                m_val = (hh % 2) * 30
+                h = pp // PERIODS_PER_HOUR
+                m_val = (pp % PERIODS_PER_HOUR) * PERIOD_MINUTES
                 period_records.append(PeriodRecord(
                     timestamp=f"{date_str} {h:02d}:{m_val:02d}",
                     soc_kwh=soc_before,
                     action=action.name,
-                    solar_kw=solar[hh],
-                    load_kw=load[hh],
+                    solar_kw=solar[pp],
+                    load_kw=load[pp],
                     import_price_c=actual_import,
                     export_price_c=actual_export,
                     grid_import_kwh=period_result.grid_import_kwh,
@@ -435,7 +438,7 @@ class BacktestRunner:
         start_idx = min(self.warm_up_days, len(all_dates) - 1)
         first_date = all_dates[start_idx]
 
-        # Last date: need a full day (48 half-hours).
+        # Last date: need a full day of data.
         # Use second-to-last date to be safe (last day might be incomplete)
         last_date = all_dates[-2] if len(all_dates) > 1 else all_dates[-1]
 
@@ -457,7 +460,7 @@ class BacktestRunner:
         return dates
 
     def _build_horizon_forecast(
-        self, date_str: str, start_hh: int, month: int, day: int, iso_date: str
+        self, date_str: str, start_pp: int, month: int, day: int, iso_date: str
     ) -> tuple[list[float], list[float]]:
         """Build 48h solar and load forecast from the current position.
 
@@ -465,18 +468,17 @@ class BacktestRunner:
         """
         solar_fc = []
         load_fc = []
-        periods_needed = 96  # 48 hours
+        periods_needed = HORIZON_PERIODS  # 576
 
         current_dt = datetime.strptime(date_str, "%Y/%m/%d")
-        remaining_today = 48 - start_hh
 
         # Periods from today
         today_solar = get_day_solar(self.solar, month, day)
         today_load = get_day_load(self.usage, iso_date)
 
-        for hh in range(start_hh, 48):
-            solar_fc.append(today_solar[hh])
-            load_fc.append(today_load[hh])
+        for pp in range(start_pp, PERIODS_PER_DAY):
+            solar_fc.append(today_solar[pp])
+            load_fc.append(today_load[pp])
 
         # Periods from subsequent days
         days_ahead = 1
@@ -489,11 +491,11 @@ class BacktestRunner:
             next_solar = get_day_solar(self.solar, next_month, next_day)
             next_load = get_day_load(self.usage, next_iso)
 
-            for hh in range(48):
+            for pp in range(PERIODS_PER_DAY):
                 if len(solar_fc) >= periods_needed:
                     break
-                solar_fc.append(next_solar[hh])
-                load_fc.append(next_load[hh])
+                solar_fc.append(next_solar[pp])
+                load_fc.append(next_load[pp])
 
             days_ahead += 1
 

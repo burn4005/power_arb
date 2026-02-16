@@ -80,6 +80,8 @@ class SystemConfig:
     db_path: str = _env("DB_PATH", "power_arb.db")
     timezone: str = _env("TIMEZONE", "Australia/Brisbane")
     dry_run: bool = _env_bool("DRY_RUN", False)
+    dashboard_enabled: bool = _env_bool("DASHBOARD_ENABLED", True)
+    dashboard_port: int = _env_int("DASHBOARD_PORT", 8081)
 
 
 # Singleton instances

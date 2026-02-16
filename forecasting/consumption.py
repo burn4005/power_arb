@@ -2,6 +2,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 
+from optimizer.battery_model import PERIOD_HOURS, PERIOD_MINUTES, PERIODS_PER_HOUR
 from storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,9 @@ class ConsumptionForecaster:
     Uses historical load data grouped by day-type (weekday/weekend) and
     half-hour slot to build a consumption profile. Returns P75 estimates
     (conservative -- better to over-predict so we don't run out of battery).
+
+    Output is at 5-min resolution; each half-hour profile value is
+    flat-repeated across the six 5-min periods within that slot.
 
     Until 7 days of data are collected, uses a flat default estimate.
     """
@@ -59,27 +63,22 @@ class ConsumptionForecaster:
         """Generate consumption forecast for the next N hours.
 
         Returns list of dicts with keys: timestamp (ISO), load_kw, load_kwh
-        (per 30-min interval), in 30-minute steps.
+        (per 5-min interval), in 5-minute steps.
         """
         start = start or datetime.now()
-        # Round to nearest 30-min boundary
-        if start.minute < 15:
-            start = start.replace(minute=0, second=0, microsecond=0)
-        elif start.minute < 45:
-            start = start.replace(minute=30, second=0, microsecond=0)
-        else:
-            start = (start + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+        # Round down to 5-min boundary
+        start = start.replace(minute=(start.minute // 5) * 5, second=0, microsecond=0)
 
-        periods = hours * 2  # 30-min intervals
+        periods = hours * PERIODS_PER_HOUR
         results = []
 
         for i in range(periods):
-            ts = start + timedelta(minutes=30 * i)
+            ts = start + timedelta(minutes=PERIOD_MINUTES * i)
             load_kw = self._predict_slot(ts)
             results.append({
                 "timestamp": ts.isoformat(),
                 "load_kw": load_kw,
-                "load_kwh": load_kw * 0.5,  # 30-min interval
+                "load_kwh": load_kw * PERIOD_HOURS,
             })
 
         return results

@@ -282,6 +282,17 @@
     <button id="btnStep" title="Step Forward">&#9197;</button>
 
     <div class="speed-control">
+      <label>View:</label>
+      <select id="viewSelect" style="background:#21262d;border:1px solid #30363d;color:#e1e4e8;border-radius:4px;padding:4px 6px;font-size:12px">
+        <option value="1">1 day</option>
+        <option value="2" selected>2 days</option>
+        <option value="3">3 days</option>
+        <option value="5">5 days</option>
+        <option value="7">7 days</option>
+      </select>
+    </div>
+
+    <div class="speed-control">
       <label>Speed:</label>
       <input type="range" id="speedSlider" min="0" max="100" value="10">
       <span class="speed-val" id="speedVal">1x</span>
@@ -306,8 +317,10 @@ let accumulator = 0;
 
 // ─── Charts ──────────────────────────────────────────────────
 let chartPrices, chartPower, chartSoc, chartCumulative;
-const WINDOW = 96;     // 2 days of context (48h)
-const HALF_WIN = WINDOW / 2; // playhead sits at centre of window
+let PPD = 288;         // periods per day (computed from metadata)
+let KWH_TO_KW = 12;   // 1/PERIOD_HOURS — converts per-period kWh to kW
+let WINDOW = PPD * 2;  // visible window in periods (default 2 days)
+let HALF_WIN = WINDOW / 2; // playhead sits at centre of window
 
 const ACTION_COLORS = {
   GRID_CHARGE: 'rgba(88,166,255,0.6)',
@@ -330,7 +343,7 @@ function sliderToSpeed(v) {
 }
 // Periods per second at a given speed multiplier
 function periodsPerSec(s) {
-  return s * 0.48;  // 1x=0.48/s (~1 per 2s), 100x=48/s (~1 day/s)
+  return s * PPD / 100;  // 1x≈PPD/100 per sec, 100x≈PPD/s (~1 day/s)
 }
 
 // ─── Load Data ───────────────────────────────────────────────
@@ -350,6 +363,16 @@ function init() {
   document.getElementById('app').style.display = '';
   document.getElementById('headerPeriod').textContent =
     `${D.metadata.start_date} to ${D.metadata.end_date} | ${D.metadata.total_days} days | ${D.metadata.total_periods.toLocaleString()} periods`;
+
+  // Compute periods-per-day from metadata (fallback to 48 for old 30-min data)
+  const periodMin = D.metadata.period_minutes || 30;
+  PPD = (24 * 60) / periodMin;
+  KWH_TO_KW = 60 / periodMin;  // 1/PERIOD_HOURS
+
+  // Set initial window from the view selector dropdown
+  const viewDays = parseInt(document.getElementById('viewSelect').value) || 2;
+  WINDOW = PPD * viewDays;
+  HALF_WIN = WINDOW / 2;
 
   createCharts();
   setupControls();
@@ -484,10 +507,10 @@ function createCharts() {
 }
 
 function downsampleDaily(arr) {
-  // Take every 48th value (end of each day)
+  // Take the last value of each day
   const labels = [];
   const values = [];
-  for (let i = 47; i < arr.length; i += 48) {
+  for (let i = PPD - 1; i < arr.length; i += PPD) {
     labels.push(D.timestamps[i].substring(0, 10));
     values.push(Math.round(arr[i]) / 100);  // cents to dollars
   }
@@ -506,7 +529,7 @@ function updateView() {
 
   // Stats bar
   document.getElementById('statDate').textContent = ts;
-  const dayNum = Math.floor(i / 48) + 1;
+  const dayNum = Math.floor(i / PPD) + 1;
   document.getElementById('statDayNum').textContent = `Day ${dayNum} of ${D.metadata.total_days}`;
 
   document.getElementById('statSoc').textContent = `${soc.toFixed(1)} kWh`;
@@ -527,8 +550,8 @@ function updateView() {
   const gridImp = D.grid_import_kwh[i];
   const gridExp = D.grid_export_kwh[i];
   document.getElementById('statPowerSub').textContent =
-    gridExp > 0.01 ? `Exporting ${(gridExp * 2).toFixed(1)} kW` :
-    gridImp > 0.01 ? `Importing ${(gridImp * 2).toFixed(1)} kW` : 'Grid balanced';
+    gridExp > 0.001 ? `Exporting ${(gridExp * KWH_TO_KW).toFixed(1)} kW` :
+    gridImp > 0.001 ? `Importing ${(gridImp * KWH_TO_KW).toFixed(1)} kW` : 'Grid balanced';
 
   document.getElementById('statSavings').textContent = `$${(savings / 100).toFixed(2)}`;
 
@@ -551,9 +574,9 @@ function updateView() {
   chartPrices.options.plugins.annotation.annotations.playhead.xMax = centreInWin;
   chartPrices.update('none');
 
-  // Power chart (kWh per half-hour × 2 = kW average)
-  const sliceGridExportKw = D.grid_export_kwh.slice(winStart, winEnd).map(v => v * 2);
-  const sliceGridImportKw = D.grid_import_kwh.slice(winStart, winEnd).map(v => v * 2);
+  // Power chart (kWh per period × KWH_TO_KW = kW average)
+  const sliceGridExportKw = D.grid_export_kwh.slice(winStart, winEnd).map(v => v * KWH_TO_KW);
+  const sliceGridImportKw = D.grid_import_kwh.slice(winStart, winEnd).map(v => v * KWH_TO_KW);
   chartPower.data.labels = sliceLabels;
   chartPower.data.datasets[0].data = sliceSolar;
   chartPower.data.datasets[1].data = sliceLoad;
@@ -578,7 +601,7 @@ function updateView() {
   chartSoc.update('none');
 
   // Cumulative chart — move "now" line
-  const dayIdx = Math.floor(i / 48);
+  const dayIdx = Math.floor(i / PPD);
   chartCumulative.options.plugins.annotation.annotations.nowLine.xMin = dayIdx;
   chartCumulative.options.plugins.annotation.annotations.nowLine.xMax = dayIdx;
   chartCumulative.update('none');
@@ -666,6 +689,14 @@ function setupControls() {
     document.getElementById('speedVal').textContent = `${speed}x`;
   });
 
+  // View selector: adjust visible window
+  document.getElementById('viewSelect').addEventListener('change', (e) => {
+    const days = parseInt(e.target.value) || 2;
+    WINDOW = PPD * days;
+    HALF_WIN = WINDOW / 2;
+    updateView();
+  });
+
   progressBar.addEventListener('click', (e) => {
     const rect = progressBar.getBoundingClientRect();
     const pct = (e.clientX - rect.left) / rect.width;
@@ -685,9 +716,9 @@ function setupControls() {
       e.preventDefault();
       btnPlay.click();
     } else if (e.code === 'ArrowRight') {
-      if (idx < D.timestamps.length - 1) { idx = Math.min(idx + 48, D.timestamps.length - 1); updateView(); }
+      if (idx < D.timestamps.length - 1) { idx = Math.min(idx + PPD, D.timestamps.length - 1); updateView(); }
     } else if (e.code === 'ArrowLeft') {
-      if (idx > 0) { idx = Math.max(idx - 48, 0); updateView(); }
+      if (idx > 0) { idx = Math.max(idx - PPD, 0); updateView(); }
     } else if (e.code === 'Home') {
       idx = 0; updateView();
     } else if (e.code === 'End') {
