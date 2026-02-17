@@ -1,7 +1,7 @@
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from amber.client import PriceInterval
 from storage.database import Database
@@ -105,6 +105,8 @@ class PriceDampener:
     ) -> list[DampenedPrice]:
         """Apply dampening to a list of forecast price intervals."""
         now = reference_time or datetime.now()
+        if now.tzinfo is None: now = now.replace(tzinfo=timezone.utc)
+        else: now = now.astimezone(timezone.utc)
         results = []
 
         for p in prices:

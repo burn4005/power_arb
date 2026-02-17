@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 from amberelectric import AmberApi, ApiClient, Configuration, ChannelType, SpikeStatus
 
@@ -8,7 +8,6 @@ import config
 from storage.database import Database
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class PriceInterval:
@@ -51,8 +50,13 @@ class AmberClient:
         export_prices = []
         db_records = []
 
+
         for interval in raw:
-            channel_type = interval.channel_type
+
+            #print(type(interval))
+            #print(vars(interval))
+            
+            channel_type = interval.actual_instance.channel_type
             if channel_type == ChannelType.GENERAL:
                 channel = "import"
             elif channel_type == ChannelType.FEEDIN:
@@ -60,7 +64,7 @@ class AmberClient:
             else:
                 continue  # skip controlled load
 
-            interval_type = str(interval.type).lower()
+            interval_type = str(interval.actual_instance.type).lower()
             if "current" in interval_type:
                 forecast_type = "current"
             elif "forecast" in interval_type:
@@ -73,14 +77,14 @@ class AmberClient:
             spike_str = raw_spike.value if raw_spike else "none"
 
             pi = PriceInterval(
-                timestamp=interval.start_time.isoformat(),
-                end_time=interval.end_time.isoformat(),
-                per_kwh=interval.per_kwh,
-                spot_per_kwh=getattr(interval, "spot_per_kwh", None) or 0.0,
+                timestamp=interval.actual_instance.start_time.isoformat(),
+                end_time=interval.actual_instance.end_time.isoformat(),
+                per_kwh=interval.actual_instance.per_kwh,
+                spot_per_kwh=getattr(interval.actual_instance, "spot_per_kwh", None) or 0.0,
                 channel=channel,
                 forecast_type=forecast_type,
                 spike_status=spike_str,
-                duration_min=interval.duration or 5,
+                duration_min=interval.actual_instance.duration or 5,
             )
 
             if channel == "import":
@@ -125,6 +129,9 @@ class AmberClient:
         """Store forecast prices for later comparison with actuals."""
         records = []
         now = datetime.fromisoformat(fetch_time)
+        if now.tzinfo is None: now = now.replace(tzinfo=timezone.utc)
+        else: now = now.astimezone(timezone.utc)
+        
         for p in prices:
             if p.forecast_type != "forecast":
                 continue
