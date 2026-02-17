@@ -27,7 +27,7 @@ import schedule
 import config
 from amber.client import AmberClient
 from amber.price_dampener import PriceDampener
-from foxess.modbus_client import FoxESSModbusClient, WorkMode
+from foxess.modbus_client import FoxESSModbusClient, WorkMode, InverterState
 from pricing.custom_csv import generate_price_intervals
 from solcast.client import SolcastClient, FETCH_HOURS_AEST
 from forecasting.consumption import ConsumptionForecaster
@@ -38,10 +38,12 @@ from optimizer.dp_optimizer import DPOptimizer
 from storage.database import Database
 
 logging.basicConfig(
+ #   filename='app.log', filemode='w',
     level=getattr(logging, config.system.log_level),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
 logger = logging.getLogger("power_arb")
 
 # Map optimizer actions to FoxESS work modes
@@ -109,7 +111,19 @@ class PowerArbSystem:
             if state is None:
                 logger.error("Cannot read inverter state; skipping cycle")
                 self._handle_failure()
-                return
+                state = InverterState(
+                    soc_pct=0,
+                    soc_kwh=0,
+                    battery_power_w=0,
+                    pv_power_w=0,
+                    grid_power_w=0,
+                    load_power_w=0,
+                    battery_temp_c=0,
+                    work_mode=WorkMode.SELF_USE,
+                    min_soc_pct=0,
+                    export_limit_w=0
+                )
+                #return
 
             self._consecutive_failures = 0
             current_soc = state.soc_kwh
