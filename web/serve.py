@@ -88,12 +88,15 @@ def parse_csv_preview(csv_path: str) -> list[dict]:
     rows = []
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
         reader = csv.reader(f)
-        next(reader, None)
         for row in reader:
             if len(row) < 3:
                 continue
+            col0 = row[0].strip()
+            # Skip header rows (first column is not a time like "00:00")
+            if col0 and not col0[0].isdigit():
+                continue
             rows.append({
-                "time": row[0].strip(),
+                "time": col0,
                 "import_price": row[1].strip(),
                 "export_price": row[2].strip(),
             })
@@ -122,35 +125,17 @@ class DevHandler(http.server.SimpleHTTPRequestHandler):
 
         elif self.path == "/api/settings/upload-pricing":
             try:
-                content_type = self.headers.get("Content-Type", "")
-                if "multipart/form-data" not in content_type:
-                    self._send_json({"ok": False, "error": "Expected multipart form data"}, 400)
-                    return
-                boundary = content_type.split("boundary=")[1].strip()
                 length = int(self.headers.get("Content-Length", 0))
-                raw = self.rfile.read(length)
-                boundary_bytes = boundary.encode()
-                parts = raw.split(b"--" + boundary_bytes)
-                file_content = None
-                filename = "custom_pricing.csv"
-                for part in parts:
-                    if b"filename=" in part:
-                        header_end = part.index(b"\r\n\r\n")
-                        header = part[:header_end].decode("utf-8", errors="replace")
-                        for segment in header.split(";"):
-                            segment = segment.strip()
-                            if segment.startswith("filename="):
-                                filename = segment.split("=", 1)[1].strip('"')
-                        file_content = part[header_end + 4:]
-                        if file_content.endswith(b"\r\n"):
-                            file_content = file_content[:-2]
-                        break
-                if file_content is None:
-                    self._send_json({"ok": False, "error": "No file found in upload"}, 400)
+                body = json.loads(self.rfile.read(length)) if length else {}
+                filename = body.get("filename", "custom_pricing.csv")
+                content = body.get("content", "")
+                if not content:
+                    self._send_json({"ok": False, "error": "No file content"}, 400)
                     return
+                content = content.replace("\r\n", "\n").replace("\r", "\n")
                 dest = ROOT / filename
-                with open(dest, "wb") as f:
-                    f.write(file_content)
+                with open(dest, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(content)
                 preview = parse_csv_preview(str(dest))
                 env_settings = read_env_file()
                 env_settings["CUSTOM_PRICING_CSV"] = filename

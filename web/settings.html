@@ -416,6 +416,12 @@
         <input type="number" id="BATTERY_CYCLE_LIFE" name="BATTERY_CYCLE_LIFE">
       </div>
       <div class="form-row"><div class="hint">Used to calculate degradation cost per kWh cycled.</div></div>
+      <div class="divider"></div>
+      <div class="form-row">
+        <label for="GRID_EXPORT_LIMIT_KW">Grid Export Limit (kW)</label>
+        <input type="number" id="GRID_EXPORT_LIMIT_KW" name="GRID_EXPORT_LIMIT_KW" step="0.1" min="0" max="10">
+      </div>
+      <div class="form-row"><div class="hint">Normal export limit setpoint. Automatically set to 0 during negative export pricing.</div></div>
     </div>
   </div>
 
@@ -470,7 +476,7 @@ const ENV_KEYS = [
   'SOLCAST_API_KEY', 'SOLCAST_RESOURCE_ID',
   'FOXESS_IP', 'FOXESS_PORT', 'FOXESS_SLAVE_ID',
   'BATTERY_CAPACITY_KWH', 'BATTERY_MAX_POWER_KW', 'BATTERY_MIN_SOC_PCT',
-  'BATTERY_EFFICIENCY', 'BATTERY_COST_AUD', 'BATTERY_CYCLE_LIFE',
+  'BATTERY_EFFICIENCY', 'BATTERY_COST_AUD', 'BATTERY_CYCLE_LIFE', 'GRID_EXPORT_LIMIT_KW',
   'SCHEDULER_INTERVAL_SECONDS', 'LOG_LEVEL', 'DB_PATH', 'TIMEZONE', 'DRY_RUN',
   'RETAILER', 'CUSTOM_PRICING_CSV',
 ];
@@ -558,7 +564,7 @@ async function saveSettings() {
     });
     const result = await resp.json();
     if (result.ok) {
-      showToast('Settings saved. Restart the system to apply changes.', 'success');
+      showToast('Settings saved. System is restarting to apply changes.', 'success');
     } else {
       showToast('Save failed: ' + (result.error || 'Unknown error'), 'error');
     }
@@ -595,13 +601,14 @@ document.getElementById('csvFileInput').addEventListener('change', async (e) => 
   const file = e.target.files[0];
   if (!file) return;
 
-  const formData = new FormData();
-  formData.append('file', file);
+  // Read file as text on the client, send as JSON (avoids multipart parsing)
+  const text = await file.text();
 
   try {
     const resp = await fetch('/api/settings/upload-pricing', {
       method: 'POST',
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename: file.name, content: text }),
     });
     const result = await resp.json();
     if (result.ok) {

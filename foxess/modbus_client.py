@@ -53,6 +53,7 @@ class HoldingRegisters:
     TIME1_DISCHARGE_POWER = 41007
     MIN_SOC = 41009
     MIN_SOC_ON_GRID = 41010
+    EXPORT_LIMIT = 41012
 
 
 @dataclass
@@ -67,6 +68,7 @@ class InverterState:
     battery_temp_c: float
     work_mode: WorkMode
     min_soc_pct: int
+    export_limit_w: int
 
 
 def _to_signed16(value: int) -> int:
@@ -147,6 +149,9 @@ class FoxESSModbusClient:
             min_soc_result = self._read_holding_registers(HoldingRegisters.MIN_SOC, 1)
             min_soc = min_soc_result[0] if min_soc_result else 10
 
+            export_limit_result = self._read_holding_registers(HoldingRegisters.EXPORT_LIMIT, 1)
+            export_limit_w = export_limit_result[0] if export_limit_result else 10000
+
             soc_kwh = battery_soc / 100.0 * config.battery.capacity_kwh
 
             return InverterState(
@@ -159,6 +164,7 @@ class FoxESSModbusClient:
                 battery_temp_c=battery_temp,
                 work_mode=work_mode,
                 min_soc_pct=min_soc,
+                export_limit_w=export_limit_w,
             )
 
         except ModbusException as e:
@@ -194,6 +200,12 @@ class FoxESSModbusClient:
         # Also set min SoC on grid to same value
         self._write_register(HoldingRegisters.MIN_SOC_ON_GRID, soc_pct)
         return True
+
+    def set_export_limit(self, power_w: int) -> bool:
+        """Set grid export power limit in watts (clamped to 0-10000W)."""
+        power_w = max(0, min(10000, power_w))
+        logger.info("Setting export limit to %dW", power_w)
+        return self._write_register(HoldingRegisters.EXPORT_LIMIT, power_w)
 
     def set_charge_period(
         self, enable: bool, start_hour: int, start_min: int,

@@ -36,11 +36,7 @@ def load_custom_schedule(csv_path: str) -> list[dict]:
     entries = []
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.reader(f)
-        header = next(reader, None)
-        if header is None:
-            raise ValueError("Custom pricing CSV is empty")
-
-        for row_num, row in enumerate(reader, start=2):
+        for row_num, row in enumerate(reader, start=1):
             if len(row) < 3:
                 continue
             time_str = row[0].strip()
@@ -50,14 +46,13 @@ def load_custom_schedule(csv_path: str) -> list[dict]:
                 minute = int(parts[1]) if len(parts) > 1 else 0
                 time_minutes = hour * 60 + minute
             except (ValueError, IndexError):
-                logger.warning("Skipping invalid time on row %d: %s", row_num, time_str)
+                # Skip header rows or invalid lines
                 continue
 
             try:
                 import_price = float(row[1].strip())
                 export_price = float(row[2].strip())
             except ValueError:
-                logger.warning("Skipping invalid prices on row %d", row_num)
                 continue
 
             entries.append({

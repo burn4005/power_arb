@@ -85,6 +85,8 @@ class PowerArbSystem:
         self._manual_override: str | None = None
         self._override_expires: datetime | None = None
         self._using_custom = False
+        self._restart_requested = False
+        self._export_limited = False
 
     def run_cycle(self):
         """Execute one optimization cycle."""
@@ -110,10 +112,16 @@ class PowerArbSystem:
 
             self._consecutive_failures = 0
             current_soc = state.soc_kwh
+
+            # Sync export limit flag from inverter on first read
+            if self._last_action is None:
+                self._export_limited = state.export_limit_w == 0
+
             logger.info(
-                "Inverter: SoC=%.1f kWh (%.0f%%), PV=%dW, Grid=%dW, Load=%dW, Mode=%s",
+                "Inverter: SoC=%.1f kWh (%.0f%%), PV=%dW, Grid=%dW, Load=%dW, Mode=%s, ExportLimit=%dW",
                 state.soc_kwh, state.soc_pct, state.pv_power_w,
                 state.grid_power_w, state.load_power_w, state.work_mode.name,
+                state.export_limit_w,
             )
 
             # Log battery state
@@ -190,6 +198,26 @@ class PowerArbSystem:
             solar_kw = [solar_fc[i]["solar_kw"] for i in range(n_periods)]
             load_kw = [consumption_fc[i]["load_kw"] for i in range(n_periods)]
             timestamps = [dampened_import[i].timestamp for i in range(n_periods)]
+
+            # 6b. Manage grid export limit based on export pricing
+            current_export_price = export_cents[0]
+            normal_limit_w = int(config.battery.grid_export_limit_kw * 1000)
+            if current_export_price < 0:
+                if not self._export_limited:
+                    logger.info(
+                        "Export price negative (%.1fc/kWh) — setting export limit to 0W",
+                        current_export_price,
+                    )
+                    self.foxess.set_export_limit(0)
+                    self._export_limited = True
+            else:
+                if self._export_limited:
+                    logger.info(
+                        "Export price non-negative (%.1fc/kWh) — restoring export limit to %dW",
+                        current_export_price, normal_limit_w,
+                    )
+                    self.foxess.set_export_limit(normal_limit_w)
+                    self._export_limited = False
 
             # 7. Run optimizer
             result = self.optimizer.optimize(
@@ -377,6 +405,8 @@ class PowerArbSystem:
                     "work_mode": state.work_mode.name,
                     "override": self._manual_override or "AUTO",
                     "override_expires": self._override_expires.isoformat() if self._override_expires else None,
+                    "export_limited": self._export_limited,
+                    "export_limit_w": state.export_limit_w,
                 },
 
                 "forecast": {
@@ -560,17 +590,24 @@ class PowerArbSystem:
 
     @staticmethod
     def _parse_csv_preview(csv_path: str) -> list[dict]:
-        """Read a custom pricing CSV and return rows for preview."""
+        """Read a custom pricing CSV and return rows for preview.
+
+        Auto-detects whether the first row is a header by checking if
+        the first column looks like a time (contains ':' and starts with a digit).
+        """
         import csv as csv_mod
         rows = []
         with open(csv_path, newline="", encoding="utf-8-sig") as f:
             reader = csv_mod.reader(f)
-            next(reader, None)  # skip header
             for row in reader:
                 if len(row) < 3:
                     continue
+                col0 = row[0].strip()
+                # Skip header rows (first column is not a time like "00:00")
+                if col0 and not col0[0].isdigit():
+                    continue
                 rows.append({
-                    "time": row[0].strip(),
+                    "time": col0,
                     "import_price": row[1].strip(),
                     "export_price": row[2].strip(),
                 })
@@ -614,52 +651,27 @@ class PowerArbSystem:
                         length = int(self.headers.get("Content-Length", 0))
                         body = json.loads(self.rfile.read(length)) if length else {}
                         system._write_env_file(body)
-                        logger.info("Settings saved via web UI")
+                        logger.info("Settings saved via web UI — scheduling restart")
+                        system._restart_requested = True
                         self._send_json({"ok": True})
                     except Exception as e:
                         self._send_json({"ok": False, "error": str(e)}, 400)
 
                 elif self.path == "/api/settings/upload-pricing":
                     try:
-                        content_type = self.headers.get("Content-Type", "")
-                        if "multipart/form-data" not in content_type:
-                            self._send_json({"ok": False, "error": "Expected multipart form data"}, 400)
-                            return
-
-                        # Parse multipart boundary
-                        boundary = content_type.split("boundary=")[1].strip()
                         length = int(self.headers.get("Content-Length", 0))
-                        raw = self.rfile.read(length)
-
-                        # Extract file content from multipart body
-                        boundary_bytes = boundary.encode()
-                        parts = raw.split(b"--" + boundary_bytes)
-
-                        file_content = None
-                        filename = "custom_pricing.csv"
-                        for part in parts:
-                            if b"filename=" in part:
-                                # Extract filename
-                                header_end = part.index(b"\r\n\r\n")
-                                header = part[:header_end].decode("utf-8", errors="replace")
-                                for segment in header.split(";"):
-                                    segment = segment.strip()
-                                    if segment.startswith("filename="):
-                                        filename = segment.split("=", 1)[1].strip('"')
-                                file_content = part[header_end + 4:]
-                                # Remove trailing boundary markers
-                                if file_content.endswith(b"\r\n"):
-                                    file_content = file_content[:-2]
-                                break
-
-                        if file_content is None:
-                            self._send_json({"ok": False, "error": "No file found in upload"}, 400)
+                        body = json.loads(self.rfile.read(length)) if length else {}
+                        filename = body.get("filename", "custom_pricing.csv")
+                        content = body.get("content", "")
+                        if not content:
+                            self._send_json({"ok": False, "error": "No file content"}, 400)
                             return
 
-                        # Save to project root
+                        # Normalize line endings and save to project root
+                        content = content.replace("\r\n", "\n").replace("\r", "\n")
                         dest = project_root / filename
-                        with open(dest, "wb") as f:
-                            f.write(file_content)
+                        with open(dest, "w", encoding="utf-8", newline="\n") as f:
+                            f.write(content)
                         logger.info("Custom pricing CSV saved: %s", dest)
 
                         # Validate and preview
@@ -750,8 +762,17 @@ class PowerArbSystem:
 
         logger.info("Scheduler running. Press Ctrl+C to stop.")
         while self._running:
+            if self._restart_requested:
+                self._restart()
             schedule.run_pending()
             time.sleep(1)
+
+    def _restart(self):
+        """Restart the process to pick up new .env settings."""
+        logger.info("Restarting to apply new settings...")
+        self.foxess.emergency_self_use()
+        self.foxess.disconnect()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def stop(self):
         self._running = False

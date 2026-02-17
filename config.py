@@ -54,6 +54,7 @@ class BatteryConfig:
     efficiency: float = _env_float("BATTERY_EFFICIENCY", 0.90)
     cost_aud: float = _env_float("BATTERY_COST_AUD", 15000.0)
     cycle_life: int = _env_int("BATTERY_CYCLE_LIFE", 6000)
+    grid_export_limit_kw: float = _env_float("GRID_EXPORT_LIMIT_KW", 10.0)
 
     @property
     def min_soc_kwh(self) -> float:
