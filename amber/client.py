@@ -118,6 +118,7 @@ class AmberClient:
         self._backfill_actuals(import_prices, "import")
         self._backfill_actuals(export_prices, "export")
 
+
         return {
             "import": sorted(import_prices, key=lambda p: p.timestamp),
             "export": sorted(export_prices, key=lambda p: p.timestamp),

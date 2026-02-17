@@ -107,6 +107,7 @@ class PriceDampener:
         now = reference_time or datetime.now()
         if now.tzinfo is None: now = now.replace(tzinfo=timezone.utc)
         else: now = now.astimezone(timezone.utc)
+        
         results = []
 
         for p in prices:

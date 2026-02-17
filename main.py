@@ -121,7 +121,7 @@ class PowerArbSystem:
                     battery_temp_c=0,
                     work_mode=WorkMode.SELF_USE,
                     min_soc_pct=0,
-                    export_limit_w=0,
+                    export_limit_w=0
                 )
                 #return
 
