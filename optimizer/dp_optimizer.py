@@ -37,6 +37,8 @@ class DPOptimizer:
         self.model = BatteryModel()
         self.capacity = config.battery.capacity_kwh
         self.min_soc = config.battery.min_soc_kwh
+        self.max_charge_price = config.battery.max_charge_price_c
+        self.min_discharge_price = config.battery.min_discharge_price_c
 
         # Pre-compute SoC grid
         self.soc_levels = np.arange(self.min_soc, self.capacity + SOC_STEP, SOC_STEP)
@@ -82,6 +84,16 @@ class DPOptimizer:
             best_actions = np.zeros(self.n_states, dtype=int)
 
             for a_idx, action in enumerate(actions):
+                # Price guardrails: skip actions that violate limits
+                if (action == Action.GRID_CHARGE
+                        and self.max_charge_price > 0
+                        and import_prices[t] > self.max_charge_price):
+                    continue
+                if (action == Action.DISCHARGE_GRID
+                        and self.min_discharge_price > 0
+                        and export_prices[t] < self.min_discharge_price):
+                    continue
+
                 new_soc, profit = self.model.apply_action_vec(
                     soc_arr, action,
                     solar_forecast[t], load_forecast[t],

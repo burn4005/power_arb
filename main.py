@@ -48,7 +48,8 @@ logger = logging.getLogger("power_arb")
 ACTION_TO_MODE = {
     Action.GRID_CHARGE: WorkMode.FORCE_CHARGE,
     Action.SELF_USE: WorkMode.SELF_USE,
-    Action.HOLD: WorkMode.SELF_USE,         # same mode, but min SoC set high to prevent discharge
+    Action.SELF_USE_NO_EXPORT: WorkMode.SELF_USE,  # same mode, but export limit set to 0W
+    Action.HOLD: WorkMode.SELF_USE,                 # same mode, but min SoC set high to prevent discharge
     Action.DISCHARGE_GRID: WorkMode.FORCE_DISCHARGE,
 }
 
@@ -199,26 +200,6 @@ class PowerArbSystem:
             load_kw = [consumption_fc[i]["load_kw"] for i in range(n_periods)]
             timestamps = [dampened_import[i].timestamp for i in range(n_periods)]
 
-            # 6b. Manage grid export limit based on export pricing
-            current_export_price = export_cents[0]
-            normal_limit_w = int(config.battery.grid_export_limit_kw * 1000)
-            if current_export_price < 0:
-                if not self._export_limited:
-                    logger.info(
-                        "Export price negative (%.1fc/kWh) — setting export limit to 0W",
-                        current_export_price,
-                    )
-                    self.foxess.set_export_limit(0)
-                    self._export_limited = True
-            else:
-                if self._export_limited:
-                    logger.info(
-                        "Export price non-negative (%.1fc/kWh) — restoring export limit to %dW",
-                        current_export_price, normal_limit_w,
-                    )
-                    self.foxess.set_export_limit(normal_limit_w)
-                    self._export_limited = False
-
             # 7. Run optimizer
             result = self.optimizer.optimize(
                 current_soc_kwh=current_soc,
@@ -257,6 +238,10 @@ class PowerArbSystem:
                 # SELF_USE, GRID_CHARGE, DISCHARGE_GRID all use normal min SoC
                 min_soc = int(config.battery.min_soc_pct)
 
+            # Determine export limit based on action
+            normal_limit_w = int(config.battery.grid_export_limit_kw * 1000)
+            wants_no_export = action == Action.SELF_USE_NO_EXPORT
+
             # Only write to inverter if action changed
             mode_changed = False
             if action != self._last_action:
@@ -266,6 +251,13 @@ class PowerArbSystem:
                 success = self.foxess.set_work_mode(mode)
                 if success:
                     self.foxess.set_min_soc(min_soc)
+                    # Set export limit based on action
+                    if wants_no_export and not self._export_limited:
+                        self.foxess.set_export_limit(0)
+                        self._export_limited = True
+                    elif not wants_no_export and self._export_limited:
+                        self.foxess.set_export_limit(normal_limit_w)
+                        self._export_limited = False
                     self._last_action = action
                     mode_changed = True
                 else:
@@ -485,6 +477,12 @@ class PowerArbSystem:
                         else None
                         for r in history
                     ],
+                    "action": [
+                        decision_map[r["timestamp"]]["action"].upper()
+                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["action"]
+                        else None
+                        for r in history
+                    ],
                 },
             }
 
@@ -520,7 +518,7 @@ class PowerArbSystem:
 
     def _set_override(self, mode: str, duration_minutes: int = 60) -> dict:
         """Set or clear manual override. Returns status dict."""
-        valid_modes = {"AUTO", "GRID_CHARGE", "SELF_USE", "HOLD", "DISCHARGE_GRID"}
+        valid_modes = {"AUTO", "GRID_CHARGE", "SELF_USE", "SELF_USE_NO_EXPORT", "HOLD", "DISCHARGE_GRID"}
         if mode not in valid_modes:
             return {"ok": False, "error": f"Invalid mode: {mode}. Valid: {sorted(valid_modes)}"}
 

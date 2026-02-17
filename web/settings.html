@@ -422,6 +422,17 @@
         <input type="number" id="GRID_EXPORT_LIMIT_KW" name="GRID_EXPORT_LIMIT_KW" step="0.1" min="0" max="10">
       </div>
       <div class="form-row"><div class="hint">Normal export limit setpoint. Automatically set to 0 during negative export pricing.</div></div>
+      <div class="divider"></div>
+      <div class="form-row">
+        <label for="MAX_CHARGE_PRICE_C">Max Charge Price (c/kWh)</label>
+        <input type="number" id="MAX_CHARGE_PRICE_C" name="MAX_CHARGE_PRICE_C" step="0.1" min="0">
+      </div>
+      <div class="form-row"><div class="hint">Optimizer won't grid-charge if import price exceeds this. 0 = no limit.</div></div>
+      <div class="form-row">
+        <label for="MIN_DISCHARGE_PRICE_C">Min Discharge Price (c/kWh)</label>
+        <input type="number" id="MIN_DISCHARGE_PRICE_C" name="MIN_DISCHARGE_PRICE_C" step="0.1" min="0">
+      </div>
+      <div class="form-row"><div class="hint">Optimizer won't grid-discharge if export price is below this. 0 = no limit.</div></div>
     </div>
   </div>
 
@@ -477,6 +488,7 @@ const ENV_KEYS = [
   'FOXESS_IP', 'FOXESS_PORT', 'FOXESS_SLAVE_ID',
   'BATTERY_CAPACITY_KWH', 'BATTERY_MAX_POWER_KW', 'BATTERY_MIN_SOC_PCT',
   'BATTERY_EFFICIENCY', 'BATTERY_COST_AUD', 'BATTERY_CYCLE_LIFE', 'GRID_EXPORT_LIMIT_KW',
+  'MAX_CHARGE_PRICE_C', 'MIN_DISCHARGE_PRICE_C',
   'SCHEDULER_INTERVAL_SECONDS', 'LOG_LEVEL', 'DB_PATH', 'TIMEZONE', 'DRY_RUN',
   'RETAILER', 'CUSTOM_PRICING_CSV',
 ];

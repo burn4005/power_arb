@@ -163,6 +163,7 @@
   }
   .badge-GRID_CHARGE { background: #0d419d; color: #79c0ff; }
   .badge-SELF_USE { background: #0d4228; color: #56d364; }
+  .badge-SELF_USE_NO_EXPORT { background: #1a3a2a; color: #39d353; }
   .badge-HOLD { background: #4d3800; color: #e3b341; }
   .badge-DISCHARGE_GRID { background: #5a1a1a; color: #ff7b72; }
 
@@ -263,6 +264,9 @@
   }
   .override-buttons button.btn-SELF_USE.active-override {
     background: #0d4228; border-color: #3fb950; color: #56d364;
+  }
+  .override-buttons button.btn-SELF_USE_NO_EXPORT.active-override {
+    background: #1a3a2a; border-color: #39d353; color: #39d353;
   }
   .override-buttons button.btn-HOLD.active-override {
     background: #4d3800; border-color: #d29922; color: #e3b341;
@@ -411,6 +415,7 @@
       <button class="btn-AUTO active-override" data-mode="AUTO">AUTO</button>
       <button class="btn-GRID_CHARGE" data-mode="GRID_CHARGE">GRID CHARGE</button>
       <button class="btn-SELF_USE" data-mode="SELF_USE">SELF USE</button>
+      <button class="btn-SELF_USE_NO_EXPORT" data-mode="SELF_USE_NO_EXPORT">NO EXPORT</button>
       <button class="btn-HOLD" data-mode="HOLD">HOLD</button>
       <button class="btn-DISCHARGE_GRID" data-mode="DISCHARGE_GRID">DISCHARGE</button>
       <div class="override-duration">
@@ -474,6 +479,12 @@
   <div class="chart-container small">
     <div class="chart-title">Schedule Profit (c per period)</div>
     <canvas id="chartProfit"></canvas>
+  </div>
+</div>
+<div class="chart-full">
+  <div class="chart-container small">
+    <div class="chart-title">Forecast Action (Optimizer Work Mode)</div>
+    <canvas id="chartAction"></canvas>
   </div>
 </div>
 
@@ -565,9 +576,19 @@
 const ACTION_COLORS = {
   GRID_CHARGE: '#58a6ff',
   SELF_USE: '#3fb950',
+  SELF_USE_NO_EXPORT: '#39d353',
   HOLD: '#d29922',
   DISCHARGE_GRID: '#f85149',
 };
+
+const ACTION_TO_NUM = {
+  DISCHARGE_GRID: 1,
+  HOLD: 2,
+  SELF_USE_NO_EXPORT: 3,
+  SELF_USE: 4,
+  GRID_CHARGE: 5,
+};
+const ACTION_NUM_LABELS = ['Disabled', 'Discharge', 'Hold', 'No Export', 'Self Use', 'Grid Charge'];
 
 let viewHours = 12;
 let lastData = null;
@@ -712,7 +733,7 @@ function buildTimeline(D) {
 }
 
 // ── Chart instances ─────────────────────────────────────────────
-let chartPrices, chartSolarLoad, chartSoc, chartTemp, chartEnergyFlow, chartProfit;
+let chartPrices, chartSolarLoad, chartSoc, chartTemp, chartEnergyFlow, chartProfit, chartAction;
 
 function createCharts() {
   // Prices
@@ -808,6 +829,43 @@ function createCharts() {
       { label: 'Profit', data: [], backgroundColor: [] },
     ]},
     options: optsPr,
+  });
+
+  // Forecast Action
+  const optsAc = chartDefaults();
+  optsAc.plugins.annotation = { annotations: {} };
+  optsAc.plugins.legend = { display: false };
+  optsAc.scales.y = {
+    ...optsAc.scales.y,
+    min: 0, max: 5,
+    ticks: {
+      color: '#484f58', font: { size: 10 },
+      stepSize: 1,
+      callback: v => ACTION_NUM_LABELS[v] || '',
+    },
+  };
+  chartAction = new Chart(document.getElementById('chartAction').getContext('2d'), {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'Action', data: [], borderWidth: 2, pointRadius: 0, stepped: 'before',
+        fill: true, backgroundColor: 'rgba(88,166,255,0.08)',
+        segment: {
+          borderColor: ctx => {
+            const v = ctx.p0.parsed.y;
+            const names = Object.keys(ACTION_TO_NUM);
+            const name = names.find(n => ACTION_TO_NUM[n] === v);
+            return name ? (ACTION_COLORS[name] || '#58a6ff') : '#484f58';
+          },
+          backgroundColor: ctx => {
+            const v = ctx.p0.parsed.y;
+            const names = Object.keys(ACTION_TO_NUM);
+            const name = names.find(n => ACTION_TO_NUM[n] === v);
+            return name ? (ACTION_COLORS[name] + '20') : 'transparent';
+          },
+        },
+      },
+    ]},
+    options: optsAc,
   });
 }
 
@@ -1031,6 +1089,14 @@ function updateTimelineCharts(D) {
   );
   chartProfit.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
   chartProfit.update();
+
+  // ── Action chart (history + forecast) ────────────────────────
+  const actionMerged = t.merge(hist.action, fc.schedule_action, null, null);
+  const actionNums = actionMerged.map(a => a ? (ACTION_TO_NUM[a] || 0) : null);
+  chartAction.data.labels = t.labels;
+  chartAction.data.datasets[0].data = actionNums;
+  chartAction.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
+  chartAction.update();
 }
 
 // ── View selector ───────────────────────────────────────────────

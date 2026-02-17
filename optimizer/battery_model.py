@@ -103,6 +103,30 @@ class BatteryModel:
             grid_export = solar_to_grid
             energy_cycled = solar_to_battery + soc_discharged
 
+        elif action == Action.SELF_USE_NO_EXPORT:
+            # Self-Use mode with export limit = 0W.
+            # Same as SELF_USE but excess solar is curtailed, not exported.
+            solar_to_load = min(solar_kwh, load_kwh)
+            remaining_load = load_kwh - solar_to_load
+            solar_excess = solar_kwh - solar_to_load
+
+            # Excess solar charges battery
+            solar_to_battery = min(solar_excess,
+                                   (self.capacity - soc_kwh) / self.eta,
+                                   max_charge_kwh)
+            # Remaining excess solar is curtailed (not exported)
+            soc_after_charge = soc_kwh + solar_to_battery * self.eta
+
+            # Battery discharges to cover remaining load
+            available_discharge = max(0, soc_after_charge - self.min_soc) * self.eta
+            battery_to_load = min(remaining_load, available_discharge, max_discharge_kwh)
+            soc_discharged = battery_to_load / self.eta
+
+            new_soc = soc_after_charge - soc_discharged
+            grid_import = max(0, remaining_load - battery_to_load)
+            grid_export = 0.0  # export limit = 0W
+            energy_cycled = solar_to_battery + soc_discharged
+
         elif action == Action.HOLD:
             # Self-Use mode with min SoC = current level.
             # Battery won't discharge. Excess solar still charges battery.

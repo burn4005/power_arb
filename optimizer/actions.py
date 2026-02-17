@@ -5,10 +5,11 @@ class Action(Enum):
     """Battery actions the optimizer can choose.
 
     These map 1:1 to distinct FoxESS inverter behaviours:
-    - GRID_CHARGE  -> Force Charge (mode 3)
-    - SELF_USE     -> Self-Use (mode 0), min SoC low
-    - HOLD         -> Self-Use (mode 0), min SoC = current (prevents discharge)
-    - DISCHARGE_GRID -> Force Discharge (mode 4)
+    - GRID_CHARGE        -> Force Charge (mode 3)
+    - SELF_USE           -> Self-Use (mode 0), min SoC low
+    - SELF_USE_NO_EXPORT -> Self-Use (mode 0), min SoC low, export limit 0W
+    - HOLD               -> Self-Use (mode 0), min SoC = current (prevents discharge)
+    - DISCHARGE_GRID     -> Force Discharge (mode 4)
     """
 
     GRID_CHARGE = "grid_charge"
@@ -19,6 +20,12 @@ class Action(Enum):
     """FoxESS Self-Use mode: solar covers load, excess solar charges battery,
     battery discharges to cover load when solar is insufficient, any remaining
     excess solar exports to grid. This is the inverter's native behaviour."""
+
+    SELF_USE_NO_EXPORT = "self_use_no_export"
+    """Self-Use mode with grid export limit set to 0W. Solar covers load,
+    excess solar charges battery, battery discharges to cover load, but any
+    remaining excess solar is curtailed (not exported). Use when: export price
+    is negative and exporting would cost money."""
 
     HOLD = "hold"
     """Self-Use mode but with min SoC set to current level so the battery
