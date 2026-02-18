@@ -162,6 +162,7 @@
     font-weight: 600;
   }
   .badge-GRID_CHARGE { background: #0d419d; color: #79c0ff; }
+  .badge-GRID_CHARGE_NO_EXPORT { background: #0d2a5a; color: #58a0ff; }
   .badge-SELF_USE { background: #0d4228; color: #56d364; }
   .badge-SELF_USE_NO_EXPORT { background: #1a3a2a; color: #39d353; }
   .badge-HOLD { background: #4d3800; color: #e3b341; }
@@ -262,6 +263,9 @@
   .override-buttons button.btn-GRID_CHARGE.active-override {
     background: #0d419d; border-color: #58a6ff; color: #79c0ff;
   }
+  .override-buttons button.btn-GRID_CHARGE_NO_EXPORT.active-override {
+    background: #0d2a5a; border-color: #58a0ff; color: #58a0ff;
+  }
   .override-buttons button.btn-SELF_USE.active-override {
     background: #0d4228; border-color: #3fb950; color: #56d364;
   }
@@ -334,6 +338,93 @@
     .stats-bar.cols-8 { grid-template-columns: repeat(2, 1fr); }
     .stats-bar.cols-4 { grid-template-columns: repeat(2, 1fr); }
   }
+
+  /* ── Simulation mode ───────────────────────────────────────── */
+  .sim-banner {
+    background: #4d2e00;
+    border-bottom: 1px solid #7a4a00;
+    padding: 6px 24px;
+    font-size: 12px;
+    color: #f0c000;
+    display: none;
+    align-items: center;
+    gap: 12px;
+  }
+  .sim-banner.visible { display: flex; }
+  .sim-banner .sim-label {
+    font-weight: 700;
+    letter-spacing: 1px;
+    font-size: 11px;
+    background: #f0c000;
+    color: #0f1117;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .sim-controls {
+    position: sticky;
+    bottom: 0;
+    background: #161b22;
+    border-top: 1px solid #30363d;
+    padding: 10px 24px;
+    display: none;
+    align-items: center;
+    gap: 14px;
+    z-index: 50;
+  }
+  .sim-controls.visible { display: flex; }
+  .sim-controls button {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #e1e4e8;
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+  }
+  .sim-controls button:hover { background: #30363d; }
+  .sim-controls button.playing { background: #1f6feb; border-color: #1f6feb; }
+  .sim-progress {
+    flex: 1;
+    height: 6px;
+    background: #21262d;
+    border-radius: 3px;
+    cursor: pointer;
+    position: relative;
+  }
+  .sim-progress .sim-fill {
+    height: 100%;
+    background: #f0c000;
+    border-radius: 3px;
+  }
+  .sim-speed {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #8b949e;
+  }
+  .sim-speed input[type="range"] {
+    width: 100px;
+    accent-color: #f0c000;
+  }
+  .sim-speed .speed-val {
+    font-size: 12px;
+    font-weight: 600;
+    color: #f0c000;
+    min-width: 36px;
+  }
+  .sim-time {
+    font-size: 12px;
+    color: #8b949e;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  body.sim-mode #lastUpdated::after {
+    content: ' (SIM)';
+    color: #f0c000;
+    font-size: 11px;
+  }
 </style>
 </head>
 <body>
@@ -346,9 +437,17 @@
 <div class="header">
   <h1><span class="status-dot ok" id="statusDot"></span> Battery Arbitrage Monitor</h1>
   <div class="updated">
+    <a href="index.html" style="color:#8b949e;text-decoration:none;margin-right:16px;font-size:13px;">Backtest</a>
+    <a href="dashboard.html?sim" id="simToggleLink" style="color:#8b949e;text-decoration:none;margin-right:16px;font-size:13px;">Simulate</a>
     <a href="settings.html" style="color:#8b949e;text-decoration:none;margin-right:16px;font-size:13px;">Settings</a>
     Last updated: <span id="lastUpdated">--:--:--</span>
   </div>
+</div>
+
+<div class="sim-banner" id="simBanner">
+  <span class="sim-label">SIM</span>
+  Playing back historical data &mdash; <span id="simTimestamp">--</span>
+  &nbsp;&nbsp;<a href="dashboard.html" style="color:#f0c000;font-size:11px;">Exit simulation</a>
 </div>
 
 <div class="stale-banner" id="staleBanner">
@@ -414,6 +513,7 @@
     <div class="override-buttons" id="overrideButtons">
       <button class="btn-AUTO active-override" data-mode="AUTO">AUTO</button>
       <button class="btn-GRID_CHARGE" data-mode="GRID_CHARGE">GRID CHARGE</button>
+      <button class="btn-GRID_CHARGE_NO_EXPORT" data-mode="GRID_CHARGE_NO_EXPORT">GC NO EXPORT</button>
       <button class="btn-SELF_USE" data-mode="SELF_USE">SELF USE</button>
       <button class="btn-SELF_USE_NO_EXPORT" data-mode="SELF_USE_NO_EXPORT">NO EXPORT</button>
       <button class="btn-HOLD" data-mode="HOLD">HOLD</button>
@@ -571,10 +671,28 @@
   </div>
 </div>
 
+<!-- Simulation controls bar (must be before <script> so getElementById works on init) -->
+<div class="sim-controls" id="simControls">
+  <button id="simRestart" title="Restart">⏮</button>
+  <button id="simStepBack" title="Step back">◀</button>
+  <button id="simPlay" title="Play/Pause">▶</button>
+  <button id="simStep" title="Step forward">▶▶</button>
+  <div class="sim-speed">
+    <span>Speed:</span>
+    <input type="range" id="simSpeedSlider" min="0" max="100" value="10">
+    <span class="speed-val" id="simSpeedVal">1x</span>
+  </div>
+  <div class="sim-progress" id="simProgressBar">
+    <div class="sim-fill" id="simFill" style="width:0%"></div>
+  </div>
+  <div class="sim-time" id="simTime">-- / --</div>
+</div>
+
 <script>
 // ── Constants ───────────────────────────────────────────────────
 const ACTION_COLORS = {
   GRID_CHARGE: '#58a6ff',
+  GRID_CHARGE_NO_EXPORT: '#2060c0',
   SELF_USE: '#3fb950',
   SELF_USE_NO_EXPORT: '#39d353',
   HOLD: '#d29922',
@@ -587,8 +705,9 @@ const ACTION_TO_NUM = {
   SELF_USE_NO_EXPORT: 3,
   SELF_USE: 4,
   GRID_CHARGE: 5,
+  GRID_CHARGE_NO_EXPORT: 6,
 };
-const ACTION_NUM_LABELS = ['Disabled', 'Discharge', 'Hold', 'No Export', 'Self Use', 'Grid Charge'];
+const ACTION_NUM_LABELS = ['Disabled', 'Discharge', 'Hold', 'No Export', 'Self Use', 'Grid Charge', 'GC No Export'];
 
 let viewHours = 12;
 let lastData = null;
@@ -837,7 +956,7 @@ function createCharts() {
   optsAc.plugins.legend = { display: false };
   optsAc.scales.y = {
     ...optsAc.scales.y,
-    min: 0, max: 5,
+    min: 0, max: 6,
     ticks: {
       color: '#484f58', font: { size: 10 },
       stepSize: 1,
@@ -1201,9 +1320,265 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+// ── Simulation mode ─────────────────────────────────────────────
+const SIM_MODE = new URLSearchParams(window.location.search).has('sim');
+
+let simData = null;      // loaded backtest_data.json
+let simIdx = 0;          // current period index
+let simPlaying = false;
+let simSpeed = 1;
+let simLastFrame = 0;
+let simAccum = 0;
+let simPPD = 288;        // periods per day
+
+function simSliderToSpeed(v) {
+  if (v <= 0) return 1;
+  return Math.round(Math.pow(10, v / 50));  // 0→1x, 50→10x, 100→100x
+}
+
+function simPeriodsPerSec(s) {
+  return s * simPPD / 100;
+}
+
+function simToISO(ts) {
+  // "2024/07/01 08:30" → "2024-07-01T08:30:00"
+  return ts.replace(/\//g, '-').replace(' ', 'T') + ':00';
+}
+
+function buildSimDashboard(B, idx) {
+  const n = B.timestamps.length;
+  const KWH_TO_KW = 60 / (B.metadata.period_minutes || 5);
+  const capacity = B.metadata.capacity_kwh;
+  const HIST_WIN = simPPD * 2;
+  const FC_WIN = simPPD * 2;
+  const histStart = Math.max(0, idx - HIST_WIN);
+  const fcEnd = Math.min(n, idx + FC_WIN);
+
+  const battKw = (i) => {
+    const battKwh = (B.solar_kw[i] / KWH_TO_KW) + B.grid_import_kwh[i]
+                  - (B.load_kw[i] / KWH_TO_KW) - B.grid_export_kwh[i];
+    return battKwh * KWH_TO_KW;
+  };
+  const gridKw = (i) => (B.grid_import_kwh[i] - B.grid_export_kwh[i]) * KWH_TO_KW;
+
+  const todayDate = B.timestamps[idx].substring(0, 10);
+  let todayStart = idx;
+  while (todayStart > 0 && B.timestamps[todayStart - 1].substring(0, 10) === todayDate) todayStart--;
+
+  let todayImport = 0, todayExport = 0;
+  for (let i = todayStart; i <= idx; i++) {
+    todayImport += B.grid_import_kwh[i] * B.import_price_c[i];
+    todayExport += B.grid_export_kwh[i] * B.export_price_c[i];
+  }
+  const todaySavingsC = (B.cumulative_savings_c[idx] || 0) - (B.cumulative_savings_c[Math.max(0, todayStart - 1)] || 0);
+
+  let cycledToday = 0;
+  for (let i = todayStart; i < idx; i++) {
+    cycledToday += Math.abs(B.soc_kwh[i + 1] - B.soc_kwh[i]);
+  }
+  const cyclesToday = cycledToday / (2 * capacity);
+
+  const hLen = idx - histStart;
+  const fcSlice = arr => arr.slice(idx, fcEnd);
+  const histSlice = arr => arr.slice(histStart, idx);
+
+  const fcImport = fcSlice(B.import_price_c);
+  const fcExport = fcSlice(B.export_price_c);
+  const fcActions = fcSlice(B.action);
+  const fcProfit = fcSlice(B.net_cost_c).map(v => -v);
+
+  return {
+    updated_at: simToISO(B.timestamps[idx]),
+    live: {
+      pv_power_kw: B.solar_kw[idx],
+      load_power_kw: B.load_kw[idx],
+      grid_power_kw: gridKw(idx),
+      battery_power_kw: battKw(idx),
+      soc_pct: (B.soc_kwh[idx] / capacity) * 100,
+      soc_kwh: B.soc_kwh[idx],
+      battery_temp_c: 25.0,
+      min_soc_pct: (B.metadata.min_soc_kwh / capacity) * 100,
+      import_price_c: B.import_price_c[idx],
+      export_price_c: B.export_price_c[idx],
+      dampened_import_c: B.import_price_c[idx],
+      dampened_export_c: B.export_price_c[idx],
+      spike_status: 'none',
+      action: B.action[idx],
+      optimizer_action: B.action[idx],
+      reason: 'Simulation: ' + B.timestamps[idx],
+      work_mode: 'SELF_USE',
+      override: 'AUTO',
+      override_expires: null,
+      export_limited: false,
+      export_limit_w: 10000,
+    },
+    forecast: {
+      timestamps: fcSlice(B.timestamps).map(simToISO),
+      raw_import_price_c: fcImport,
+      raw_export_price_c: fcExport,
+      import_price_c: fcImport,
+      export_price_c: fcExport,
+      solar_kw: fcSlice(B.solar_kw),
+      solar_p10_kw: fcSlice(B.solar_kw).map(v => v * 0.7),
+      solar_p90_kw: fcSlice(B.solar_kw).map(v => v * 1.3),
+      load_kw: fcSlice(B.load_kw),
+      schedule_action: fcActions,
+      schedule_profit_c: fcProfit,
+      soc_trajectory_kwh: fcSlice(B.soc_kwh),
+    },
+    history: {
+      timestamps: histSlice(B.timestamps).map(simToISO),
+      soc_kwh: histSlice(B.soc_kwh),
+      pv_power_kw: histSlice(B.solar_kw),
+      load_power_kw: histSlice(B.load_kw),
+      grid_power_kw: Array.from({length: hLen}, (_, k) => gridKw(histStart + k)),
+      battery_power_kw: Array.from({length: hLen}, (_, k) => battKw(histStart + k)),
+      battery_temp_c: new Array(hLen).fill(null),
+      import_price_c: histSlice(B.import_price_c),
+      export_price_c: histSlice(B.export_price_c),
+      action: histSlice(B.action),
+    },
+    financial: {
+      today_import_cost_c: todayImport,
+      today_export_revenue_c: todayExport,
+      today_degradation_cost_c: 0,
+      today_savings_c: todaySavingsC,
+      horizon_profit_c: fcProfit.reduce((a, b) => a + b, 0),
+    },
+    battery_health: {
+      cycles_today: cyclesToday,
+      capacity_kwh: capacity,
+      min_soc_kwh: B.metadata.min_soc_kwh,
+      max_power_kw: B.metadata.max_power_kw,
+      cycle_life: B.metadata.cycle_life,
+    },
+    system_health: {
+      amber_last_fetch: simToISO(B.timestamps[idx]),
+      amber_status: 'sim',
+      amber_prices_count: fcActions.length,
+      solcast_last_fetch: simToISO(B.timestamps[idx]),
+      solcast_status: 'sim',
+      solcast_calls_today: 1,
+      solcast_next_scheduled_hour: 12,
+      foxess_status: 'sim',
+      foxess_last_read: simToISO(B.timestamps[idx]),
+      optimizer_last_run: simToISO(B.timestamps[idx]),
+      optimizer_execution_ms: 60,
+      consecutive_failures: 0,
+      errors: [],
+    },
+  };
+}
+
+function simRenderFrame() {
+  if (!simData) return;
+  lastData = buildSimDashboard(simData, simIdx);
+  document.getElementById('loading').style.display = 'none';
+  updateDashboard(lastData);
+  document.getElementById('simTimestamp').textContent = simData.timestamps[simIdx];
+
+  // Update progress bar and time
+  const pct = (simIdx / (simData.timestamps.length - 1)) * 100;
+  document.getElementById('simFill').style.width = pct + '%';
+  document.getElementById('simTime').textContent =
+    (simIdx + 1).toLocaleString() + ' / ' + simData.timestamps.length.toLocaleString()
+    + '  (' + simData.metadata.start_date + ' → ' + simData.metadata.end_date + ')';
+}
+
+function simTick(now) {
+  if (!simPlaying) return;
+  if (simLastFrame === 0) simLastFrame = now;
+  const dt = (now - simLastFrame) / 1000;
+  simLastFrame = now;
+  simAccum += simPeriodsPerSec(simSpeed) * dt;
+  const steps = Math.floor(simAccum);
+  simAccum -= steps;
+  if (steps > 0) {
+    simIdx = Math.min(simIdx + steps, simData.timestamps.length - 1);
+    simRenderFrame();
+    if (simIdx >= simData.timestamps.length - 1) {
+      simPlaying = false;
+      document.getElementById('simPlay').textContent = '▶';
+      document.getElementById('simPlay').classList.remove('playing');
+      return;
+    }
+  }
+  requestAnimationFrame(simTick);
+}
+
+function startSimulation() {
+  document.body.classList.add('sim-mode');
+  document.getElementById('simBanner').classList.add('visible');
+  document.getElementById('simControls').classList.add('visible');
+  document.getElementById('simToggleLink').textContent = 'Live';
+  document.getElementById('simToggleLink').href = 'dashboard.html';
+  document.getElementById('loadingMsg').textContent = 'Loading backtest data...';
+
+  fetch('backtest_data.json')
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(data => {
+      simData = data;
+      simPPD = Math.round(24 * 60 / (data.metadata.period_minutes || 5));
+      simIdx = Math.min(simPPD * 2, simData.timestamps.length - 1); // start 2 days in
+      simRenderFrame();
+    })
+    .catch(err => {
+      document.getElementById('loadingMsg').textContent = 'Failed to load backtest_data.json: ' + err.message;
+      document.getElementById('loadingSub').textContent = 'Run: python backtest/export.py';
+    });
+
+  // Controls
+  const btnPlay = document.getElementById('simPlay');
+  btnPlay.addEventListener('click', () => {
+    simPlaying = !simPlaying;
+    btnPlay.textContent = simPlaying ? '⏸' : '▶';
+    btnPlay.classList.toggle('playing', simPlaying);
+    if (simPlaying) { simLastFrame = 0; simAccum = 0; requestAnimationFrame(simTick); }
+  });
+
+  document.getElementById('simRestart').addEventListener('click', () => {
+    simIdx = 0; simAccum = 0; simRenderFrame();
+  });
+
+  document.getElementById('simStep').addEventListener('click', () => {
+    if (simData && simIdx < simData.timestamps.length - 1) { simIdx++; simRenderFrame(); }
+  });
+
+  document.getElementById('simStepBack').addEventListener('click', () => {
+    if (simIdx > 0) { simIdx--; simRenderFrame(); }
+  });
+
+  document.getElementById('simSpeedSlider').addEventListener('input', e => {
+    simSpeed = simSliderToSpeed(parseInt(e.target.value));
+    document.getElementById('simSpeedVal').textContent = simSpeed + 'x';
+  });
+
+  document.getElementById('simProgressBar').addEventListener('click', e => {
+    if (!simData) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    simIdx = Math.floor(pct * (simData.timestamps.length - 1));
+    simIdx = Math.max(0, Math.min(simIdx, simData.timestamps.length - 1));
+    simRenderFrame();
+  });
+
+  document.addEventListener('keydown', e => {
+    if (!simData) return;
+    if (e.code === 'Space') { e.preventDefault(); btnPlay.click(); }
+    else if (e.code === 'ArrowRight') { simIdx = Math.min(simIdx + simPPD, simData.timestamps.length - 1); simRenderFrame(); }
+    else if (e.code === 'ArrowLeft')  { simIdx = Math.max(simIdx - simPPD, 0); simRenderFrame(); }
+    else if (e.code === 'Home') { simIdx = 0; simRenderFrame(); }
+    else if (e.code === 'End')  { simIdx = simData.timestamps.length - 1; simRenderFrame(); }
+  });
+}
+
 // ── Init ────────────────────────────────────────────────────────
 createCharts();
-startPolling();
+if (SIM_MODE) {
+  startSimulation();
+} else {
+  startPolling();
+}
 </script>
 </body>
 </html>

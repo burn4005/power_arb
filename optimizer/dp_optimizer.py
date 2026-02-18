@@ -30,7 +30,7 @@ class DPOptimizer:
     maximizes total profit (export revenue - import cost - degradation).
 
     Complexity: O(S * T * A) where S=SoC states (~85), T=periods (~576),
-    A=actions (5). Total ~245,000 evaluations, runs in ~60ms.
+    A=actions (6). Total ~295,000 evaluations, runs in ~75ms.
     """
 
     def __init__(self):
@@ -77,18 +77,37 @@ class DPOptimizer:
         V = np.full((n_periods + 1, self.n_states), 0.0)
         policy = np.zeros((n_periods, self.n_states), dtype=int)
 
+        # Round-trip efficiency (eta^2): charging at P_import and discharging at
+        # P_future only profits when P_import < P_future * eta^2.
+        rt_efficiency = self.model.eta ** 2
+
         # Backward pass: vectorized over all SoC states at once
         soc_arr = self.soc_levels.astype(np.float64)
         for t in range(n_periods - 1, -1, -1):
             best_values = np.full(self.n_states, -np.inf)
             best_actions = np.zeros(self.n_states, dtype=int)
 
+            # Average import price over the next 24 hours from t — used as the
+            # "expected future price" benchmark for grid charge decisions.
+            lookahead_end = min(t + 12 * 24, n_periods)  # 24h = 288 periods
+            avg_future_import = float(np.mean(import_prices[t:lookahead_end]))
+
             for a_idx, action in enumerate(actions):
-                # Price guardrails: skip actions that violate limits
-                if (action == Action.GRID_CHARGE
-                        and self.max_charge_price > 0
-                        and import_prices[t] > self.max_charge_price):
-                    continue
+                # ── Per-period guardrails (scalar, apply to all states) ──────
+                if action in (Action.GRID_CHARGE, Action.GRID_CHARGE_NO_EXPORT):
+                    # Hard price cap (user-configured)
+                    if (self.max_charge_price > 0
+                            and import_prices[t] > self.max_charge_price):
+                        continue
+                    # Economic guardrail: only charge from grid when the current
+                    # import price is meaningfully below the expected future
+                    # average (adjusted for round-trip losses).  This prevents
+                    # the optimizer from doing marginal/defensive charges when
+                    # the battery is near empty — the inverter handles min-SoC
+                    # protection natively in SELF_USE mode.
+                    if import_prices[t] >= avg_future_import * rt_efficiency:
+                        continue
+
                 if (action == Action.DISCHARGE_GRID
                         and self.min_discharge_price > 0
                         and export_prices[t] < self.min_discharge_price):
@@ -107,6 +126,15 @@ class DPOptimizer:
                 )
 
                 total_value = profit + V[t + 1][new_s_idx]
+
+                # ── Per-state guardrail: skip grid charge when battery is
+                # already at or within one step of full capacity.  At full SoC
+                # grid_to_bat == 0 so GRID_CHARGE is identical to HOLD/SELF_USE,
+                # but wins tie-breaks by accident (it's first in the enum). ───
+                if action in (Action.GRID_CHARGE, Action.GRID_CHARGE_NO_EXPORT):
+                    total_value = np.where(
+                        soc_arr >= self.capacity - SOC_STEP, -np.inf, total_value
+                    )
 
                 better = total_value > best_values
                 best_values[better] = total_value[better]
@@ -194,13 +222,15 @@ class DPOptimizer:
         """Generate a human-readable explanation for the chosen action."""
         soc_pct = soc_kwh / self.capacity * 100
 
-        if action == Action.GRID_CHARGE:
+        if action in (Action.GRID_CHARGE, Action.GRID_CHARGE_NO_EXPORT):
             next_discharge = None
             for ts, a, _ in schedule[1:]:
                 if a == Action.DISCHARGE_GRID:
                     next_discharge = ts
                     break
-            msg = f"Charging from grid at {import_price:.1f}c/kWh (SoC {soc_pct:.0f}%)"
+            no_export_tag = " [no export]" if action == Action.GRID_CHARGE_NO_EXPORT else ""
+            msg = (f"Charging from grid at {import_price:.1f}c/kWh, "
+                   f"export {export_price:.1f}c/kWh (SoC {soc_pct:.0f}%){no_export_tag}")
             if next_discharge:
                 msg += f"; discharge expected at {next_discharge}"
             return msg

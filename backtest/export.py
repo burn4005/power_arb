@@ -29,6 +29,7 @@ def export_backtest_json(output_path: str = "web/backtest_data.json"):
         aemo_prices=aemo,
         home_usage=usage,
         solar_yield=solar,
+        reoptimize_every_n=36,  # every 3 hours — matches test speed
     )
 
     print("Running backtest...")

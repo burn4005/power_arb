@@ -3,7 +3,9 @@
     "allow": [
       "Bash(dir:*)",
       "Bash(python:*)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(wc:*)",
+      "Bash(find:*)"
     ]
   }
 }

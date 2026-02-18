@@ -61,8 +61,28 @@ class BatteryModel:
         energy_cycled = 0.0  # absolute kWh through battery (for degradation)
 
         if action == Action.GRID_CHARGE:
-            # Force Charge: charge battery from grid + solar at max rate
-            # Solar covers load first, excess charges battery, grid fills rest
+            # Force Charge: charge battery from grid + solar at max rate.
+            # Solar covers load first, excess charges battery, grid fills rest,
+            # any remaining excess solar exports to grid.
+            solar_to_load = min(solar_kwh, load_kwh)
+            solar_excess = solar_kwh - solar_to_load
+            solar_to_battery = min(solar_excess,
+                                   (self.capacity - soc_kwh) / self.eta)
+            solar_to_grid = solar_excess - solar_to_battery
+            grid_to_load = load_kwh - solar_to_load
+            room_in_battery = (self.capacity - soc_kwh) / self.eta - solar_to_battery
+            grid_to_battery = min(max_charge_kwh, max(0, room_in_battery))
+
+            new_soc = soc_kwh + (solar_to_battery + grid_to_battery) * self.eta
+            new_soc = min(new_soc, self.capacity)
+            grid_import = grid_to_load + grid_to_battery
+            grid_export = solar_to_grid
+            energy_cycled = solar_to_battery + grid_to_battery
+
+        elif action == Action.GRID_CHARGE_NO_EXPORT:
+            # Force Charge + export limit 0W: same as GRID_CHARGE but excess
+            # solar that doesn't fit in the battery is curtailed, not exported.
+            # Use when: import is cheap AND export price is negative.
             solar_to_load = min(solar_kwh, load_kwh)
             solar_to_battery = min(solar_kwh - solar_to_load,
                                    (self.capacity - soc_kwh) / self.eta)
@@ -73,6 +93,7 @@ class BatteryModel:
             new_soc = soc_kwh + (solar_to_battery + grid_to_battery) * self.eta
             new_soc = min(new_soc, self.capacity)
             grid_import = grid_to_load + grid_to_battery
+            # grid_export stays 0.0 — excess solar curtailed
             energy_cycled = solar_to_battery + grid_to_battery
 
         elif action == Action.SELF_USE:
@@ -217,8 +238,21 @@ class BatteryModel:
 
         if action == Action.GRID_CHARGE:
             solar_to_load = min(solar_kwh, load_kwh)
-            solar_to_bat = np.minimum(solar_kwh - solar_to_load,
-                                       (cap - soc) / eta)
+            solar_excess = solar_kwh - solar_to_load
+            solar_to_bat = np.minimum(solar_excess, (cap - soc) / eta)
+            solar_to_grid = solar_excess - solar_to_bat
+            grid_to_load = load_kwh - solar_to_load
+            room = (cap - soc) / eta - solar_to_bat
+            grid_to_bat = np.minimum(max_charge, np.maximum(0.0, room))
+            new_soc = np.minimum(soc + (solar_to_bat + grid_to_bat) * eta, cap)
+            grid_import = grid_to_load + grid_to_bat
+            grid_export = np.float64(solar_to_grid)
+            energy_cycled = solar_to_bat + grid_to_bat
+
+        elif action == Action.GRID_CHARGE_NO_EXPORT:
+            # Same as GRID_CHARGE but excess solar curtailed (no export)
+            solar_to_load = min(solar_kwh, load_kwh)
+            solar_to_bat = np.minimum(solar_kwh - solar_to_load, (cap - soc) / eta)
             grid_to_load = load_kwh - solar_to_load
             room = (cap - soc) / eta - solar_to_bat
             grid_to_bat = np.minimum(max_charge, np.maximum(0.0, room))
@@ -242,6 +276,23 @@ class BatteryModel:
             new_soc = soc_charged - soc_discharged
             grid_import = np.maximum(0.0, remaining_load - bat_to_load)
             grid_export = solar_to_grid
+            energy_cycled = solar_to_bat + soc_discharged
+
+        elif action == Action.SELF_USE_NO_EXPORT:
+            # Self-Use with export limit 0W: same as SELF_USE but excess solar curtailed
+            solar_to_load = min(solar_kwh, load_kwh)
+            remaining_load = load_kwh - solar_to_load
+            solar_excess = solar_kwh - solar_to_load
+            solar_to_bat = np.minimum(solar_excess,
+                                       np.minimum((cap - soc) / eta, max_charge))
+            soc_charged = soc + solar_to_bat * eta
+            avail_discharge = np.maximum(0.0, soc_charged - min_s) * eta
+            bat_to_load = np.minimum(remaining_load,
+                                      np.minimum(avail_discharge, max_discharge))
+            soc_discharged = bat_to_load / eta
+            new_soc = soc_charged - soc_discharged
+            grid_import = np.maximum(0.0, remaining_load - bat_to_load)
+            grid_export = np.float64(0.0)  # export curtailed
             energy_cycled = solar_to_bat + soc_discharged
 
         elif action == Action.HOLD:

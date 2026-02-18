@@ -47,9 +47,10 @@ logger = logging.getLogger("power_arb")
 # Map optimizer actions to FoxESS work modes
 ACTION_TO_MODE = {
     Action.GRID_CHARGE: WorkMode.FORCE_CHARGE,
+    Action.GRID_CHARGE_NO_EXPORT: WorkMode.FORCE_CHARGE,  # same mode, but export limit set to 0W
     Action.SELF_USE: WorkMode.SELF_USE,
     Action.SELF_USE_NO_EXPORT: WorkMode.SELF_USE,  # same mode, but export limit set to 0W
-    Action.HOLD: WorkMode.SELF_USE,                 # same mode, but min SoC set high to prevent discharge
+    Action.HOLD: WorkMode.SELF_USE,                # same mode, but min SoC set high to prevent discharge
     Action.DISCHARGE_GRID: WorkMode.FORCE_DISCHARGE,
 }
 
@@ -240,7 +241,8 @@ class PowerArbSystem:
 
             # Determine export limit based on action
             normal_limit_w = int(config.battery.grid_export_limit_kw * 1000)
-            wants_no_export = action == Action.SELF_USE_NO_EXPORT
+            wants_no_export = action in (Action.SELF_USE_NO_EXPORT,
+                                         Action.GRID_CHARGE_NO_EXPORT)
 
             # Only write to inverter if action changed
             mode_changed = False
@@ -518,7 +520,7 @@ class PowerArbSystem:
 
     def _set_override(self, mode: str, duration_minutes: int = 60) -> dict:
         """Set or clear manual override. Returns status dict."""
-        valid_modes = {"AUTO", "GRID_CHARGE", "SELF_USE", "SELF_USE_NO_EXPORT", "HOLD", "DISCHARGE_GRID"}
+        valid_modes = {"AUTO", "GRID_CHARGE", "GRID_CHARGE_NO_EXPORT", "SELF_USE", "SELF_USE_NO_EXPORT", "HOLD", "DISCHARGE_GRID"}
         if mode not in valid_modes:
             return {"ok": False, "error": f"Invalid mode: {mode}. Valid: {sorted(valid_modes)}"}
 
