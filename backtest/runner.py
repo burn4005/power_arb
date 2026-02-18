@@ -86,11 +86,14 @@ class BacktestResult:
     # Action distribution
     action_counts: dict[str, int]
 
-    # Forecast accuracy
-    price_forecast_mae_c: float  # mean absolute error in c/kWh
+    # Forecast accuracy (mean absolute error in c/kWh)
+    price_forecast_mae_c: float       # export channel (legacy)
 
     # Per-day data
     daily_summaries: list[DaySummary]
+
+    # Import forecast accuracy (added after initial fields, needs default)
+    price_forecast_mae_import_c: float = 0.0  # import channel
 
     # Per-period data (for visualization)
     period_records: list[PeriodRecord] = field(default_factory=list)
@@ -133,7 +136,8 @@ class BacktestResult:
         print(f"  Battery ROI: {roi_years:.1f} years "
               f"(${battery_cost:,.0f} battery cost)")
         print()
-        print(f"  Price forecast MAE: {self.price_forecast_mae_c:.1f} c/kWh")
+        print(f"  Price forecast MAE: export {self.price_forecast_mae_c:.1f} c/kWh, "
+              f"import {self.price_forecast_mae_import_c:.1f} c/kWh")
         print()
         print("  Action distribution:")
         total_actions = sum(self.action_counts.values()) or 1
@@ -208,7 +212,8 @@ class BacktestRunner:
         period_records: list[PeriodRecord] = []
 
         # Forecast accuracy tracking
-        forecast_errors: list[float] = []
+        forecast_errors: list[float] = []         # export channel
+        forecast_errors_import: list[float] = []  # import channel
 
         # Schedule state across days
         current_schedule: list[tuple[str, Action, float]] | None = None
@@ -233,17 +238,16 @@ class BacktestRunner:
                     remaining = rate * (total_days - day_num)
                     eta_min = remaining / 60
                     print(
-                        f"\r  [{pct:5.1f}%] Day {day_num}/{total_days} "
+                        f"  [{pct:5.1f}%] Day {day_num}/{total_days} "
                         f"({date_str}) | "
                         f"Elapsed: {elapsed / 60:.1f}m | "
-                        f"ETA: {eta_min:.1f}m remaining",
-                        end="", flush=True,
+                        f"ETA: {eta_min:.1f}m",
+                        flush=True,
                     )
                 else:
                     print(
-                        f"\r  [{pct:5.1f}%] Day {day_num}/{total_days} "
-                        f"({date_str}) | Starting...",
-                        end="", flush=True,
+                        f"  [  0.0%] Day 0/{total_days} ({date_str}) | Starting...",
+                        flush=True,
                     )
                 last_progress_time = now
 
@@ -301,6 +305,7 @@ class BacktestRunner:
                         # Track forecast accuracy for the current period
                         if len(fc) > 0:
                             forecast_errors.append(abs(fc[0]["export_c"] - actual_spot))
+                            forecast_errors_import.append(abs(fc[0]["import_c"] - actual_import))
                     else:
                         current_schedule = None
 
@@ -332,9 +337,7 @@ class BacktestRunner:
                     period_result.grid_export_kwh * actual_export
                 )
                 day_summary.total_degradation_c += period_result.degradation_cost_cents
-                day_summary.energy_cycled_kwh += (
-                    period_result.grid_import_kwh + period_result.grid_export_kwh
-                ) * 0  # placeholder, use actual energy through battery
+                day_summary.energy_cycled_kwh += period_result.energy_cycled_kwh
                 day_actions[action.name] += 1
 
                 # No-battery baseline for this period
@@ -375,12 +378,6 @@ class BacktestRunner:
             )
             day_summary.savings_c = day_summary.baseline_net_cost_c - day_summary.net_cost_c
             day_summary.actions_count = dict(day_actions)
-            # Calculate energy cycled from degradation cost
-            deg_per_kwh_c = config.battery.degradation_per_kwh * 100
-            if deg_per_kwh_c > 0:
-                day_summary.energy_cycled_kwh = (
-                    day_summary.total_degradation_c / deg_per_kwh_c
-                )
 
             daily_summaries.append(day_summary)
             all_action_counts.update(day_actions)
@@ -406,7 +403,8 @@ class BacktestRunner:
         total_cycles = total_energy_cycled / (2 * capacity) if capacity > 0 else 0
         avg_daily = total_cycles / total_days if total_days > 0 else 0
 
-        mae = sum(forecast_errors) / len(forecast_errors) if forecast_errors else 0.0
+        mae_export = sum(forecast_errors) / len(forecast_errors) if forecast_errors else 0.0
+        mae_import = sum(forecast_errors_import) / len(forecast_errors_import) if forecast_errors_import else 0.0
 
         return BacktestResult(
             start_date=start_date,
@@ -423,7 +421,8 @@ class BacktestRunner:
             avg_daily_cycles=avg_daily,
             final_soc=soc,
             action_counts=dict(all_action_counts),
-            price_forecast_mae_c=mae,
+            price_forecast_mae_c=mae_export,
+            price_forecast_mae_import_c=mae_import,
             daily_summaries=daily_summaries,
             period_records=period_records,
         )

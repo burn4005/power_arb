@@ -44,15 +44,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("power_arb")
 
-# Map optimizer actions to FoxESS work modes
-ACTION_TO_MODE = {
-    Action.GRID_CHARGE: WorkMode.FORCE_CHARGE,
-    Action.GRID_CHARGE_NO_EXPORT: WorkMode.FORCE_CHARGE,  # same mode, but export limit set to 0W
-    Action.SELF_USE: WorkMode.SELF_USE,
-    Action.SELF_USE_NO_EXPORT: WorkMode.SELF_USE,  # same mode, but export limit set to 0W
-    Action.HOLD: WorkMode.SELF_USE,                # same mode, but min SoC set high to prevent discharge
-    Action.DISCHARGE_GRID: WorkMode.FORCE_DISCHARGE,
+# Map optimizer actions to KH work modes.
+# GRID_CHARGE / DISCHARGE_GRID use remote control (44000-44002) — not a work mode.
+# SELF_USE_NO_EXPORT uses Back-up (2) which suppresses solar export on KH.
+# HOLD uses Self-Use with min SoC raised to current level to prevent discharge.
+ACTION_TO_WORK_MODE = {
+    Action.GRID_CHARGE:          WorkMode.BACKUP,        # fallback if watchdog fires
+    Action.GRID_CHARGE_NO_EXPORT: WorkMode.BACKUP,       # same — Back-up already no-export
+    Action.SELF_USE:             WorkMode.SELF_USE,
+    Action.SELF_USE_NO_EXPORT:   WorkMode.BACKUP,        # Back-up suppresses export on KH
+    Action.HOLD:                 WorkMode.SELF_USE,
+    Action.DISCHARGE_GRID:       WorkMode.FEED_IN_FIRST, # fallback if watchdog fires
 }
+
+# Actions that use remote control registers (44000-44002) instead of work modes 3/4
+_REMOTE_CONTROL_ACTIONS = {Action.GRID_CHARGE, Action.GRID_CHARGE_NO_EXPORT, Action.DISCHARGE_GRID}
 
 STATUS_PATH = Path(__file__).parent / "web" / "dashboard_status.json"
 
@@ -88,7 +94,7 @@ class PowerArbSystem:
         self._override_expires: datetime | None = None
         self._using_custom = False
         self._restart_requested = False
-        self._export_limited = False
+        self._remote_control_active = False  # tracks whether 44000=1 is currently set
 
     def run_cycle(self):
         """Execute one optimization cycle."""
@@ -115,15 +121,12 @@ class PowerArbSystem:
             self._consecutive_failures = 0
             current_soc = state.soc_kwh
 
-            # Sync export limit flag from inverter on first read
-            if self._last_action is None:
-                self._export_limited = state.export_limit_w == 0
-
             logger.info(
-                "Inverter: SoC=%.1f kWh (%.0f%%), PV=%dW, Grid=%dW, Load=%dW, Mode=%s, ExportLimit=%dW",
+                "Inverter: SoC=%.1f kWh (%.0f%%), PV=%dW, Grid=%dW, Load=%dW, "
+                "Mode=%s, BMS charge=%dW, BMS discharge=%dW",
                 state.soc_kwh, state.soc_pct, state.pv_power_w,
                 state.grid_power_w, state.load_power_w, state.work_mode.name,
-                state.export_limit_w,
+                state.bms_max_charge_w, state.bms_max_discharge_w,
             )
 
             # Log battery state
@@ -229,41 +232,48 @@ class PowerArbSystem:
             else:
                 action = optimizer_action
 
-            mode = ACTION_TO_MODE[action]
+            work_mode = ACTION_TO_WORK_MODE[action]
 
             # Set min SoC based on action
             if action == Action.HOLD:
-                # Prevent discharge by setting min SoC to current level
                 min_soc = max(10, int(state.soc_pct))
             else:
-                # SELF_USE, GRID_CHARGE, DISCHARGE_GRID all use normal min SoC
                 min_soc = int(config.battery.min_soc_pct)
-
-            # Determine export limit based on action
-            normal_limit_w = int(config.battery.grid_export_limit_kw * 1000)
-            wants_no_export = action in (Action.SELF_USE_NO_EXPORT,
-                                         Action.GRID_CHARGE_NO_EXPORT)
 
             # Only write to inverter if action changed
             mode_changed = False
             if action != self._last_action:
                 logger.info("Action changed: %s -> %s",
-                           self._last_action.name if self._last_action else "None",
-                           action.name)
-                success = self.foxess.set_work_mode(mode)
+                            self._last_action.name if self._last_action else "None",
+                            action.name)
+
+                if action in _REMOTE_CONTROL_ACTIONS:
+                    # GRID_CHARGE / GRID_CHARGE_NO_EXPORT / DISCHARGE_GRID:
+                    # use remote control registers (44000-44002)
+                    max_hw_w = int(config.battery.max_power_kw * 1000)
+                    if action == Action.DISCHARGE_GRID:
+                        power_w = min(state.bms_max_discharge_w, max_hw_w)
+                        fallback = WorkMode.FEED_IN_FIRST
+                    else:
+                        power_w = -min(state.bms_max_charge_w, max_hw_w)
+                        fallback = WorkMode.BACKUP
+                    success = self.foxess.set_remote_control(power_w, fallback_mode=fallback)
+                    if success:
+                        self._remote_control_active = True
+                else:
+                    # SELF_USE / SELF_USE_NO_EXPORT / HOLD:
+                    # disable remote control first, then set work mode
+                    if self._remote_control_active:
+                        self.foxess.disable_remote_control()
+                        self._remote_control_active = False
+                    success = self.foxess.set_work_mode(work_mode)
+
                 if success:
                     self.foxess.set_min_soc(min_soc)
-                    # Set export limit based on action
-                    if wants_no_export and not self._export_limited:
-                        self.foxess.set_export_limit(0)
-                        self._export_limited = True
-                    elif not wants_no_export and self._export_limited:
-                        self.foxess.set_export_limit(normal_limit_w)
-                        self._export_limited = False
                     self._last_action = action
                     mode_changed = True
                 else:
-                    logger.error("Failed to set work mode; keeping previous mode")
+                    logger.error("Failed to apply action %s; keeping previous", action.name)
 
             # Log decision
             override_active = self._manual_override and self._manual_override != "AUTO"
@@ -281,7 +291,7 @@ class PowerArbSystem:
                 "dampened_export_price": export_cents[0] if export_cents else None,
                 "soc_kwh": current_soc,
                 "expected_profit": result.expected_profit_cents,
-                "actual_mode_set": mode.value if mode_changed else None,
+                "actual_mode_set": work_mode.value if mode_changed else None,
             })
 
             # 9. Update financial accumulators
@@ -397,10 +407,11 @@ class PowerArbSystem:
                     "optimizer_action": optimizer_action.name,
                     "reason": result.reason,
                     "work_mode": state.work_mode.name,
+                    "remote_control_active": self._remote_control_active,
                     "override": self._manual_override or "AUTO",
                     "override_expires": self._override_expires.isoformat() if self._override_expires else None,
-                    "export_limited": self._export_limited,
-                    "export_limit_w": state.export_limit_w,
+                    "bms_max_charge_kw": round(state.bms_max_charge_w / 1000, 2),
+                    "bms_max_discharge_kw": round(state.bms_max_discharge_w / 1000, 2),
                 },
 
                 "forecast": {
@@ -507,6 +518,7 @@ class PowerArbSystem:
             )
             self.foxess.emergency_self_use()
             self._last_action = None
+            self._remote_control_active = False
 
     def _watchdog(self):
         """Background thread: if main loop hasn't run in 10 min, force self-use."""
@@ -517,6 +529,7 @@ class PowerArbSystem:
                 logger.error("Watchdog: no cycle in %.0fs; forcing self-use", elapsed)
                 self.foxess.emergency_self_use()
                 self._last_action = None
+                self._remote_control_active = False
 
     def _set_override(self, mode: str, duration_minutes: int = 60) -> dict:
         """Set or clear manual override. Returns status dict."""
@@ -756,6 +769,9 @@ class PowerArbSystem:
 
         # Schedule daily consumption profile refresh
         schedule.every().day.at("04:00").do(self.consumption.refresh)
+
+        # Schedule daily database pruning (remove records older than 1 year)
+        schedule.every().day.at("03:00").do(self.db.prune_old_records)
 
         # Schedule dampener recalibration weekly
         schedule.every(7).days.do(self.dampener._calibrate)

@@ -108,10 +108,19 @@ class DPOptimizer:
                     if import_prices[t] >= avg_future_import * rt_efficiency:
                         continue
 
-                if (action == Action.DISCHARGE_GRID
-                        and self.min_discharge_price > 0
-                        and export_prices[t] < self.min_discharge_price):
-                    continue
+                if action == Action.DISCHARGE_GRID:
+                    # Hard price floor (user-configured)
+                    if (self.min_discharge_price > 0
+                            and export_prices[t] < self.min_discharge_price):
+                        continue
+                    # Economic guardrail: only discharge when the current
+                    # export price is meaningfully above the expected future
+                    # average (adjusted for round-trip losses).  This prevents
+                    # the optimizer from discharging into mediocre export
+                    # periods — better to hold charge for genuine spikes.
+                    avg_future_export = float(np.mean(export_prices[t:lookahead_end]))
+                    if export_prices[t] <= avg_future_export / rt_efficiency:
+                        continue
 
                 new_soc, profit = self.model.apply_action_vec(
                     soc_arr, action,
@@ -235,8 +244,9 @@ class DPOptimizer:
                 msg += f"; discharge expected at {next_discharge}"
             return msg
 
-        if action == Action.SELF_USE:
-            return (f"Self-use: solar {solar_kw:.1f}kW, load {load_kw:.1f}kW, "
+        if action in (Action.SELF_USE, Action.SELF_USE_NO_EXPORT):
+            no_export_tag = " [no export]" if action == Action.SELF_USE_NO_EXPORT else ""
+            return (f"Self-use{no_export_tag}: solar {solar_kw:.1f}kW, load {load_kw:.1f}kW, "
                     f"SoC {soc_pct:.0f}%")
 
         if action == Action.HOLD:

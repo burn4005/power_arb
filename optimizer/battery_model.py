@@ -23,6 +23,7 @@ class PeriodResult:
     grid_export_kwh: float
     degradation_cost_cents: float
     net_cost_cents: float   # positive = cost, negative = profit
+    energy_cycled_kwh: float = 0.0  # absolute kWh through battery (for cycle counting)
 
 
 PERIOD_MINUTES = 5
@@ -202,6 +203,7 @@ class BatteryModel:
             grid_export_kwh=grid_export,
             degradation_cost_cents=degradation_cents,
             net_cost_cents=net_cost,
+            energy_cycled_kwh=energy_cycled,
         )
 
     def clamp_soc(self, soc: float) -> float:

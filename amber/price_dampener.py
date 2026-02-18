@@ -85,20 +85,30 @@ class PriceDampener:
         logger.info("Calibrated dampening from %d records across %d buckets",
                      len(records), len(self._calibrated_alphas))
 
-        # Update time-of-day medians from actuals
-        tod_values: dict[int, list[float]] = {}
+        # Update time-of-day medians from actuals (both import and export)
+        export_records = self.db.get_forecast_accuracy(channel="export", days=30)
+
+        tod_import: dict[int, list[float]] = {}
         for r in records:
             if r["actual_price"] is None:
                 continue
-            ts = datetime.fromisoformat(r["target_time"])
-            hour = ts.hour
-            tod_values.setdefault(hour, []).append(r["actual_price"])
+            hour = datetime.fromisoformat(r["target_time"]).hour
+            tod_import.setdefault(hour, []).append(r["actual_price"])
 
-        for hour, vals in tod_values.items():
-            vals.sort()
-            median = vals[len(vals) // 2]
-            # Keep existing export estimate, update import
-            self._tod_medians[hour] = (median, self._tod_medians.get(hour, (15.0, 5.0))[1])
+        tod_export: dict[int, list[float]] = {}
+        for r in export_records:
+            if r["actual_price"] is None:
+                continue
+            hour = datetime.fromisoformat(r["target_time"]).hour
+            tod_export.setdefault(hour, []).append(r["actual_price"])
+
+        for hour in range(24):
+            default = self._tod_medians.get(hour, (15.0, 5.0))
+            import_vals = tod_import.get(hour)
+            export_vals = tod_export.get(hour)
+            import_med = sorted(import_vals)[len(import_vals) // 2] if import_vals else default[0]
+            export_med = sorted(export_vals)[len(export_vals) // 2] if export_vals else default[1]
+            self._tod_medians[hour] = (import_med, export_med)
 
     def dampen(
         self, prices: list[PriceInterval], reference_time: datetime | None = None

@@ -43,20 +43,20 @@ class TestAnnualBacktest:
               f"{len(cls.usage)} usage periods, "
               f"{len(cls.solar)} solar hours")
 
-    def test_annual_backtest_full(self):
-        """Run the full backtest and verify the optimizer is profitable."""
+        # Run the backtest once and share across all tests
+        print("\nRunning annual backtest...", flush=True)
         runner = BacktestRunner(
-            aemo_prices=self.aemo,
-            home_usage=self.usage,
-            solar_yield=self.solar,
+            aemo_prices=cls.aemo,
+            home_usage=cls.usage,
+            solar_yield=cls.solar,
             reoptimize_every_n=36,  # every 3 hours (36 × 5-min)
         )
+        cls.result = runner.run()
+        cls.result.print_summary()
 
-        print("\nRunning annual backtest...", flush=True)
-        result = runner.run()
-
-        # Print full summary
-        result.print_summary()
+    def test_annual_backtest_full(self):
+        """Run the full backtest and verify the optimizer is profitable."""
+        result = self.result
 
         # --- Assertions ---
 
@@ -94,14 +94,7 @@ class TestAnnualBacktest:
 
     def test_monthly_breakdown(self):
         """Run the backtest and check monthly savings vary with seasons."""
-        runner = BacktestRunner(
-            aemo_prices=self.aemo,
-            home_usage=self.usage,
-            solar_yield=self.solar,
-            reoptimize_every_n=6,
-        )
-
-        result = runner.run()
+        result = self.result
 
         # Group daily summaries by month
         monthly: dict[str, list] = {}
@@ -136,14 +129,7 @@ class TestAnnualBacktest:
 
     def test_price_forecast_reasonable_accuracy(self):
         """The naive price forecaster should have reasonable accuracy."""
-        runner = BacktestRunner(
-            aemo_prices=self.aemo,
-            home_usage=self.usage,
-            solar_yield=self.solar,
-            reoptimize_every_n=6,
-        )
-
-        result = runner.run()
+        result = self.result
 
         # MAE should be finite and positive
         assert result.price_forecast_mae_c > 0, "MAE should be positive"

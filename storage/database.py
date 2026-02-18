@@ -308,3 +308,26 @@ class Database:
                    WHERE target_time = ? AND channel = ? AND actual_price IS NULL""",
                 (actual_price, target_time, channel),
             )
+
+    def prune_old_records(self, days: int = 365):
+        """Delete records older than `days` to prevent unbounded DB growth.
+
+        Preserves the decisions table (useful for long-term analysis).
+        """
+        cutoff = f"-{days} days"
+        with self._connect() as conn:
+            for table, col in [
+                ("battery_log", "timestamp"),
+                ("consumption_log", "timestamp"),
+                ("forecast_accuracy", "target_time"),
+                ("prices", "fetched_at"),
+                ("solar_forecasts", "fetch_time"),
+            ]:
+                result = conn.execute(
+                    f"DELETE FROM {table} WHERE {col} < datetime('now', ?)",
+                    (cutoff,),
+                )
+                if result.rowcount > 0:
+                    logger.info("Pruned %d rows from %s (older than %d days)",
+                                result.rowcount, table, days)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

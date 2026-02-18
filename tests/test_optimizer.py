@@ -40,8 +40,8 @@ class TestDPOptimizer:
     def test_low_now_high_later_charges(self):
         """Low current price + high future price -> should charge now."""
         n = 48
-        import_prices = [5.0] * 6 + [50.0] * 42  # cheap first 3h, expensive after
-        export_prices = [2.0] * 6 + [40.0] * 42
+        import_prices = [5.0] * 6 + [20.0] * 18 + [80.0] * 12 + [20.0] * 12
+        export_prices = [2.0] * 6 + [10.0] * 18 + [70.0] * 12 + [10.0] * 12
 
         result = self.optimizer.optimize(
             current_soc_kwh=10.0,  # low SoC
@@ -50,7 +50,7 @@ class TestDPOptimizer:
             solar_forecast=self._make_flat(n, 0.0),
             load_forecast=self._make_flat(n, 2.0),
         )
-        # Should charge when price is 5c to sell/use later at 40-50c
+        # Should charge when price is 5c to sell/use later at 70-80c spike
         assert result.action == Action.GRID_CHARGE
 
     def test_high_now_discharges(self):
