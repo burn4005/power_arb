@@ -32,6 +32,10 @@ from pricing.custom_csv import generate_price_intervals
 from solcast.client import SolcastClient, FETCH_HOURS_AEST
 from forecasting.consumption import ConsumptionForecaster
 from forecasting.solar import SolarForecaster
+from forecasting.ml_price import MLPriceForecaster
+from forecasting.ml_consumption import MLConsumptionForecaster
+from weather.client import WeatherClient
+from homeassistant.client import HomeAssistantClient
 from optimizer.actions import Action
 from optimizer.battery_model import BatteryModel, PeriodInputs, PERIOD_HOURS
 from optimizer.dp_optimizer import DPOptimizer
@@ -72,6 +76,10 @@ class PowerArbSystem:
         self.solcast_client = SolcastClient(self.db)
         self.solar_forecaster = SolarForecaster(self.solcast_client)
         self.consumption = ConsumptionForecaster(self.db)
+        self.weather = WeatherClient(self.db)
+        self.ha = HomeAssistantClient(self.db)
+        self.ml_price = MLPriceForecaster(self.db, self.dampener)
+        self.ml_consumption = MLConsumptionForecaster(self.db, self.consumption)
         self.optimizer = DPOptimizer()
 
         self._last_action: Action | None = None
@@ -146,6 +154,12 @@ class PowerArbSystem:
                 cycle_start.isoformat(), state.load_power_w, "measured"
             )
 
+            # 1b. Poll occupancy (if HA configured)
+            occupancy = self.ha.poll_occupancy()
+
+            # 1c. Refresh weather forecast if due
+            self.weather.get_forecast()
+
             # 2. Fetch prices
             if config.retailer.retailer == "custom" and config.retailer.custom_pricing_csv:
                 prices = generate_price_intervals(
@@ -174,14 +188,32 @@ class PowerArbSystem:
                 dampened_import = import_prices_raw
                 dampened_export = export_prices_raw
             else:
-                dampened_import = self.dampener.dampen(import_prices_raw, cycle_start)
-                dampened_export = self.dampener.dampen(export_prices_raw, cycle_start)
+                dampened_import = self.ml_price.dampen(import_prices_raw, cycle_start)
+                dampened_export = self.ml_price.dampen(export_prices_raw, cycle_start)
+
+                # Snapshot price features for ML training
+                if config.ml.enabled:
+                    self.ml_price.snapshot_features(import_prices_raw, cycle_start)
 
             # 4. Get solar forecast
             solar_fc = self.solar_forecaster.forecast(hours=48, start=cycle_start)
 
             # 5. Predict consumption
-            consumption_fc = self.consumption.forecast(hours=48, start=cycle_start)
+            # Get recent loads for ML features
+            recent_history = self.db.get_consumption_history(days=1)
+            recent_loads_kw = [r["load_watts"] / 1000.0 for r in recent_history[-36:]]
+            profile_kw = self.consumption._predict_slot(cycle_start)
+
+            # Snapshot consumption features for ML training
+            if config.ml.enabled:
+                self.ml_consumption.snapshot_features(
+                    cycle_start.isoformat(), occupancy, recent_loads_kw, profile_kw
+                )
+
+            consumption_fc = self.ml_consumption.forecast(
+                hours=48, start=cycle_start,
+                occupancy=occupancy, recent_loads_kw=recent_loads_kw,
+            )
 
             # 6. Align all forecasts to same time periods
             n_periods = min(
@@ -465,6 +497,10 @@ class PowerArbSystem:
                     "optimizer_execution_ms": self._cycle_ms,
                     "consecutive_failures": self._consecutive_failures,
                     "errors": list(self._errors),
+                    "ml_price_model": "active" if self.ml_price._model_trained else "fallback",
+                    "ml_consumption_model": "active" if self.ml_consumption._model_trained else "fallback",
+                    "ha_enabled": config.homeassistant.enabled,
+                    "weather_last_fetch": self.weather._last_fetch_time.isoformat() if self.weather._last_fetch_time else None,
                 },
 
                 "history": {
@@ -767,14 +803,20 @@ class PowerArbSystem:
         interval_min = config.system.scheduler_interval_s / 60
         schedule.every(interval_min).minutes.do(self.run_cycle)
 
-        # Schedule daily consumption profile refresh
-        schedule.every().day.at("04:00").do(self.consumption.refresh)
+        # Schedule daily ML model retraining + consumption profile refresh
+        schedule.every().day.at("04:00").do(self.ml_consumption.refresh)
+        schedule.every().day.at("04:00").do(self.ml_price.train)
 
         # Schedule daily database pruning (remove records older than 1 year)
         schedule.every().day.at("03:00").do(self.db.prune_old_records)
 
         # Schedule dampener recalibration weekly
         schedule.every(7).days.do(self.dampener._calibrate)
+
+        # Schedule weather forecast refresh every 3 hours
+        schedule.every(config.weather.refresh_interval_hours).hours.do(
+            self.weather.fetch_forecast
+        )
 
         logger.info("Scheduler running. Press Ctrl+C to stop.")
         while self._running:

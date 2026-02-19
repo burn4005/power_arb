@@ -93,6 +93,32 @@ class SystemConfig:
     dashboard_port: int = _env_int("DASHBOARD_PORT", 8081)
 
 
+@dataclass(frozen=True)
+class WeatherConfig:
+    latitude: float = _env_float("LATITUDE", -27.47)
+    longitude: float = _env_float("LONGITUDE", 153.03)
+    refresh_interval_hours: int = _env_int("WEATHER_REFRESH_HOURS", 3)
+
+
+@dataclass(frozen=True)
+class HomeAssistantConfig:
+    url: str = _env("HA_URL", "")
+    token: str = _env("HA_TOKEN", "")
+    person_entities: str = _env("HA_PERSON_ENTITIES", "")
+    enabled: bool = _env_bool("HA_ENABLED", False)
+
+
+@dataclass(frozen=True)
+class MLConfig:
+    enabled: bool = _env_bool("ML_FORECASTING_ENABLED", True)
+    min_price_training_days: int = _env_int("ML_MIN_PRICE_DAYS", 14)
+    min_consumption_training_days: int = _env_int("ML_MIN_CONSUMPTION_DAYS", 7)
+    price_training_window_days: int = _env_int("ML_PRICE_WINDOW_DAYS", 60)
+    consumption_training_window_days: int = _env_int("ML_CONSUMPTION_WINDOW_DAYS", 28)
+    model_dir: str = _env("ML_MODEL_DIR", "models")
+    ac_threshold_kw: float = _env_float("ML_AC_THRESHOLD_KW", 2.0)
+
+
 # Singleton instances
 amber = AmberConfig()
 solcast = SolcastConfig()
@@ -100,3 +126,6 @@ foxess = FoxESSConfig()
 battery = BatteryConfig()
 retailer = RetailerConfig()
 system = SystemConfig()
+weather = WeatherConfig()
+homeassistant = HomeAssistantConfig()
+ml = MLConfig()

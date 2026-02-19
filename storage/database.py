@@ -85,6 +85,36 @@ CREATE TABLE IF NOT EXISTS forecast_accuracy (
 );
 
 CREATE INDEX IF NOT EXISTS idx_accuracy_target ON forecast_accuracy(target_time, channel);
+
+CREATE TABLE IF NOT EXISTS weather_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetch_time TEXT NOT NULL,
+    target_time TEXT NOT NULL,
+    temperature_c REAL NOT NULL,
+    sunrise TEXT,
+    sunset TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_weather_target ON weather_cache(target_time);
+CREATE INDEX IF NOT EXISTS idx_weather_fetch ON weather_cache(fetch_time);
+
+CREATE TABLE IF NOT EXISTS feature_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    snapshot_type TEXT NOT NULL,  -- 'price' or 'consumption'
+    features_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_features_ts ON feature_snapshots(timestamp, snapshot_type);
+
+CREATE TABLE IF NOT EXISTS occupancy_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    anyone_home INTEGER NOT NULL,
+    entities_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_occupancy_ts ON occupancy_log(timestamp);
 """
 
 
@@ -309,6 +339,101 @@ class Database:
                 (actual_price, target_time, channel),
             )
 
+    # -- Weather cache operations --
+
+    def insert_weather_cache(self, records: list[dict]):
+        with self._connect() as conn:
+            conn.executemany(
+                """INSERT INTO weather_cache
+                   (fetch_time, target_time, temperature_c, sunrise, sunset)
+                   VALUES (:fetch_time, :target_time, :temperature_c, :sunrise, :sunset)""",
+                records,
+            )
+
+    def get_latest_weather(self) -> list[dict]:
+        """Get the most recently fetched weather forecast."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(fetch_time) as latest FROM weather_cache"
+            ).fetchone()
+            if not row or not row["latest"]:
+                return []
+            rows = conn.execute(
+                "SELECT * FROM weather_cache WHERE fetch_time = ? ORDER BY target_time",
+                (row["latest"],),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_weather_at(self, target_time: str) -> dict | None:
+        """Get weather closest to a target time from the latest fetch."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM weather_cache
+                   WHERE fetch_time = (SELECT MAX(fetch_time) FROM weather_cache)
+                   ORDER BY ABS(julianday(target_time) - julianday(?))
+                   LIMIT 1""",
+                (target_time,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    # -- Feature snapshot operations --
+
+    def insert_feature_snapshot(self, timestamp: str, snapshot_type: str, features: dict):
+        import json
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO feature_snapshots (timestamp, snapshot_type, features_json)
+                   VALUES (?, ?, ?)""",
+                (timestamp, snapshot_type, json.dumps(features)),
+            )
+
+    def get_feature_snapshots(self, snapshot_type: str, days: int = 60) -> list[dict]:
+        import json
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM feature_snapshots
+                   WHERE snapshot_type = ? AND timestamp >= datetime('now', ?)
+                   ORDER BY timestamp""",
+                (snapshot_type, f"-{days} days"),
+            ).fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                d["features"] = json.loads(d["features_json"])
+                result.append(d)
+            return result
+
+    # -- Occupancy operations --
+
+    def insert_occupancy(self, timestamp: str, anyone_home: bool, entities: dict | None = None):
+        import json
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO occupancy_log (timestamp, anyone_home, entities_json)
+                   VALUES (?, ?, ?)""",
+                (timestamp, int(anyone_home), json.dumps(entities) if entities else None),
+            )
+
+    def get_latest_occupancy(self) -> bool:
+        """Return most recent occupancy state. Defaults to True if no data."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT anyone_home FROM occupancy_log ORDER BY timestamp DESC LIMIT 1"
+            ).fetchone()
+            return bool(row["anyone_home"]) if row else True
+
+    def get_occupancy_history(self, hours: int = 24) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM occupancy_log
+                   WHERE timestamp >= datetime('now', ?)
+                   ORDER BY timestamp""",
+                (f"-{hours} hours",),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # -- Maintenance --
+
     def prune_old_records(self, days: int = 365):
         """Delete records older than `days` to prevent unbounded DB growth.
 
@@ -322,6 +447,9 @@ class Database:
                 ("forecast_accuracy", "target_time"),
                 ("prices", "fetched_at"),
                 ("solar_forecasts", "fetch_time"),
+                ("weather_cache", "fetch_time"),
+                ("feature_snapshots", "timestamp"),
+                ("occupancy_log", "timestamp"),
             ]:
                 result = conn.execute(
                     f"DELETE FROM {table} WHERE {col} < datetime('now', ?)",
