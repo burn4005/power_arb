@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class HomeAssistantClient:
-    """Polls HA person.* entities for home/away state."""
+    """Polls HA person.* and climate.* entities for occupancy and AC state."""
 
     def __init__(self, db: Database):
         self.db = db
@@ -26,6 +26,10 @@ class HomeAssistantClient:
         self.token = config.homeassistant.token
         self.entities = [
             e.strip() for e in config.homeassistant.person_entities.split(",")
+            if e.strip()
+        ]
+        self.climate_entities = [
+            e.strip() for e in config.homeassistant.climate_entities.split(",")
             if e.strip()
         ]
         self._headers = {
@@ -66,3 +70,29 @@ class HomeAssistantClient:
         self.db.insert_occupancy(now, anyone_home, entity_states)
 
         return anyone_home
+
+    def poll_ac_state(self) -> bool:
+        """Check if any AC/climate entity is actively cooling or heating.
+
+        Returns False (AC off) if HA is unreachable or not configured.
+        Climate entities report state as 'cool', 'heat', 'heat_cool',
+        'dry', 'fan_only' when active, and 'off' when inactive.
+        """
+        if not self.enabled or not self.url or not self.climate_entities:
+            return False
+
+        for entity_id in self.climate_entities:
+            try:
+                resp = requests.get(
+                    f"{self.url}/api/states/{entity_id}",
+                    headers=self._headers,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                state = resp.json().get("state", "off")
+                if state not in ("off", "unavailable", "unknown"):
+                    return True
+            except requests.RequestException as e:
+                logger.warning("HA climate entity %s unreachable: %s", entity_id, e)
+
+        return False

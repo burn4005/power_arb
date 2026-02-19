@@ -105,6 +105,7 @@ class HomeAssistantConfig:
     url: str = _env("HA_URL", "")
     token: str = _env("HA_TOKEN", "")
     person_entities: str = _env("HA_PERSON_ENTITIES", "")
+    climate_entities: str = _env("HA_CLIMATE_ENTITIES", "")
     enabled: bool = _env_bool("HA_ENABLED", False)
 
 
@@ -116,7 +117,6 @@ class MLConfig:
     price_training_window_days: int = _env_int("ML_PRICE_WINDOW_DAYS", 60)
     consumption_training_window_days: int = _env_int("ML_CONSUMPTION_WINDOW_DAYS", 28)
     model_dir: str = _env("ML_MODEL_DIR", "models")
-    ac_threshold_kw: float = _env_float("ML_AC_THRESHOLD_KW", 2.0)
 
 
 # Singleton instances

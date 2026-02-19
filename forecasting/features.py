@@ -117,7 +117,7 @@ def extract_consumption_features(
     occupancy: bool,
     recent_loads_kw: list[float],
     profile_load_kw: float,
-    ac_threshold_kw: float = 2.0,
+    ac_running: bool = False,
 ) -> dict:
     """Extract consumption-specific features.
 
@@ -125,7 +125,7 @@ def extract_consumption_features(
         occupancy: Whether anyone is home.
         recent_loads_kw: Recent load readings in kW (most recent last).
         profile_load_kw: P75 profile prediction for this slot.
-        ac_threshold_kw: Load above profile that indicates AC running.
+        ac_running: Whether AC is actively running (from Home Assistant climate entity).
     """
     # Recent load averages
     if recent_loads_kw:
@@ -133,28 +133,15 @@ def extract_consumption_features(
         last_36 = recent_loads_kw[-36:]
         avg_1h = sum(last_12) / len(last_12)
         avg_3h = sum(last_36) / len(last_36)
-        current_kw = recent_loads_kw[-1]
     else:
         avg_1h = 0.0
         avg_3h = 0.0
-        current_kw = 0.0
-
-    # AC detection: current load significantly above profile
-    ac_running = 1.0 if current_kw > profile_load_kw + ac_threshold_kw else 0.0
-
-    # AC duration: how many recent periods had AC-level loads
-    ac_count = sum(
-        1 for kw in (recent_loads_kw[-12:] if recent_loads_kw else [])
-        if kw > profile_load_kw + ac_threshold_kw
-    )
-    ac_duration_mins = ac_count * 5
 
     return {
         "occupancy": 1.0 if occupancy else 0.0,
         "recent_load_avg_1h_kw": avg_1h,
         "recent_load_avg_3h_kw": avg_3h,
-        "ac_running": ac_running,
-        "ac_duration_mins": float(ac_duration_mins),
+        "ac_running": 1.0 if ac_running else 0.0,
         "profile_load_kw": profile_load_kw,
     }
 
@@ -174,7 +161,7 @@ CONSUMPTION_FEATURE_NAMES = [
     "month_sin", "month_cos", "temperature_c", "daylight_hours",
     "hours_since_sunrise", "hours_until_sunset",
     "occupancy", "recent_load_avg_1h_kw", "recent_load_avg_3h_kw",
-    "ac_running", "ac_duration_mins", "profile_load_kw",
+    "ac_running", "profile_load_kw",
 ]
 
 

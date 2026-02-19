@@ -126,6 +126,7 @@ class MLConsumptionForecaster:
     def forecast(
         self, hours: int = 48, start: datetime | None = None,
         occupancy: bool = True, recent_loads_kw: list[float] | None = None,
+        ac_running: bool = False,
     ) -> list[dict]:
         """Generate consumption forecast.
 
@@ -161,20 +162,31 @@ class MLConsumptionForecaster:
 
             profile_kw = self.fallback._predict_slot(ts)
 
+            # For near-term periods, use actual AC state from HA.
+            # For future periods, AC state decays: assume AC stays on if
+            # currently running and before midnight, off otherwise.
+            if i == 0:
+                slot_ac = ac_running
+            elif ac_running and ts.hour < 6:
+                # AC was on at cycle start and we haven't reached morning yet
+                slot_ac = True
+            else:
+                slot_ac = False
+
             features.update(extract_consumption_features(
                 occupancy=occupancy,
                 recent_loads_kw=loads,
                 profile_load_kw=profile_kw,
-                ac_threshold_kw=config.ml.ac_threshold_kw,
+                ac_running=slot_ac,
             ))
 
             vec = np.array([features_to_vector(features, CONSUMPTION_FEATURE_NAMES)])
             predicted = float(self._model.predict(vec)[0])
             predicted = max(_MIN_LOAD_KW, min(_MAX_LOAD_KW, predicted))
 
-            # AC inertia: if AC detected running after 9pm, predict overnight
-            if features["ac_running"] > 0.5 and ts.hour >= 21:
-                predicted = max(predicted, profile_kw + config.ml.ac_threshold_kw * 0.7)
+            # AC inertia: if AC running after 9pm, boost overnight prediction
+            if slot_ac and ts.hour >= 21:
+                predicted = max(predicted, profile_kw * 1.5)
 
             # Blend: near-term mostly ML, long-term blend with profile
             if i < 24:  # 2 hours
@@ -202,6 +214,7 @@ class MLConsumptionForecaster:
     def snapshot_features(
         self, timestamp: str, occupancy: bool,
         recent_loads_kw: list[float], profile_load_kw: float,
+        ac_running: bool = False,
     ):
         """Save feature snapshot for future training."""
         ts = datetime.fromisoformat(timestamp)
@@ -221,7 +234,7 @@ class MLConsumptionForecaster:
             occupancy=occupancy,
             recent_loads_kw=recent_loads_kw,
             profile_load_kw=profile_load_kw,
-            ac_threshold_kw=config.ml.ac_threshold_kw,
+            ac_running=ac_running,
         ))
         self.db.insert_feature_snapshot(timestamp, "consumption", features)
 

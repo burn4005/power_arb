@@ -633,7 +633,7 @@ def _build_consumption_features(
         occupancy=occupancy,
         recent_loads_kw=recent_loads_kw,
         profile_load_kw=profile_load_kw,
-        ac_threshold_kw=2.0,
+        ac_running=False,
     ))
     return features
 

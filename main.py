@@ -154,8 +154,9 @@ class PowerArbSystem:
                 cycle_start.isoformat(), state.load_power_w, "measured"
             )
 
-            # 1b. Poll occupancy (if HA configured)
+            # 1b. Poll occupancy and AC state (if HA configured)
             occupancy = self.ha.poll_occupancy()
+            ac_running = self.ha.poll_ac_state()
 
             # 1c. Refresh weather forecast if due
             self.weather.get_forecast()
@@ -207,12 +208,14 @@ class PowerArbSystem:
             # Snapshot consumption features for ML training
             if config.ml.enabled:
                 self.ml_consumption.snapshot_features(
-                    cycle_start.isoformat(), occupancy, recent_loads_kw, profile_kw
+                    cycle_start.isoformat(), occupancy, recent_loads_kw, profile_kw,
+                    ac_running=ac_running,
                 )
 
             consumption_fc = self.ml_consumption.forecast(
                 hours=48, start=cycle_start,
                 occupancy=occupancy, recent_loads_kw=recent_loads_kw,
+                ac_running=ac_running,
             )
 
             # 6. Align all forecasts to same time periods
