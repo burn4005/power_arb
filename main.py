@@ -27,6 +27,8 @@ import schedule
 import config
 from amber.client import AmberClient
 from amber.price_dampener import PriceDampener
+from flowpower.client import FlowPowerClient
+from flowpower.price_dampener import PriceDampener as FlowPowerPriceDampener
 from foxess.modbus_client import FoxESSModbusClient, WorkMode
 from pricing.custom_csv import generate_price_intervals
 from solcast.client import SolcastClient, FETCH_HOURS_AEST
@@ -37,7 +39,7 @@ from forecasting.ml_consumption import MLConsumptionForecaster
 from weather.client import WeatherClient
 from homeassistant.client import HomeAssistantClient
 from optimizer.actions import Action
-from optimizer.battery_model import BatteryModel, PeriodInputs, PERIOD_HOURS
+from optimizer.battery_model import BatteryModel, PeriodInputs, PERIOD_HOURS, PERIODS_PER_HOUR
 from optimizer.dp_optimizer import DPOptimizer
 from storage.database import Database
 
@@ -72,6 +74,8 @@ class PowerArbSystem:
         self.db = Database()
         self.amber = AmberClient(self.db)
         self.dampener = PriceDampener(self.db)
+        self.flowpower = FlowPowerClient(self.db)
+        self.flowpower_dampener = FlowPowerPriceDampener(self.db)
         self.foxess = FoxESSModbusClient()
         self.solcast_client = SolcastClient(self.db)
         self.solar_forecaster = SolarForecaster(self.solcast_client)
@@ -160,17 +164,26 @@ class PowerArbSystem:
 
             # 1c. Refresh weather forecast if due
             self.weather.get_forecast()
+            horizon_hours = max(6, min(48, int(config.system.optimizer_horizon_hours)))
+            horizon_periods = horizon_hours * PERIODS_PER_HOUR
 
             # 2. Fetch prices
-            if config.retailer.retailer == "custom" and config.retailer.custom_pricing_csv:
+            retailer_mode = config.retailer.retailer
+            if retailer_mode == "custom" and config.retailer.custom_pricing_csv:
                 prices = generate_price_intervals(
                     config.retailer.custom_pricing_csv,
                     start=cycle_start,
-                    hours=48,
+                    hours=horizon_hours,
                 )
                 import_prices_raw = prices["import"]
                 export_prices_raw = prices["export"]
                 # Custom prices are fixed schedules — no dampening needed
+                dampened_import = None
+                dampened_export = None
+            elif retailer_mode == "flowpower":
+                prices = self.flowpower.fetch_current_and_forecast()
+                import_prices_raw = prices["import"]
+                export_prices_raw = prices["export"]
                 dampened_import = None
                 dampened_export = None
             else:
@@ -184,10 +197,13 @@ class PowerArbSystem:
                 logger.error("No price data; skipping cycle")
                 return
 
-            # 3. Dampen forecast prices (only for Amber; custom prices used as-is)
-            if config.retailer.retailer == "custom" and config.retailer.custom_pricing_csv:
+            # 3. Dampen forecast prices (custom prices used as-is)
+            if retailer_mode == "custom" and config.retailer.custom_pricing_csv:
                 dampened_import = import_prices_raw
                 dampened_export = export_prices_raw
+            elif retailer_mode == "flowpower":
+                dampened_import = self.flowpower_dampener.dampen(import_prices_raw, cycle_start)
+                dampened_export = self.flowpower_dampener.dampen(export_prices_raw, cycle_start)
             else:
                 dampened_import = self.ml_price.dampen(import_prices_raw, cycle_start)
                 dampened_export = self.ml_price.dampen(export_prices_raw, cycle_start)
@@ -197,7 +213,7 @@ class PowerArbSystem:
                     self.ml_price.snapshot_features(import_prices_raw, cycle_start)
 
             # 4. Get solar forecast
-            solar_fc = self.solar_forecaster.forecast(hours=48, start=cycle_start)
+            solar_fc = self.solar_forecaster.forecast(hours=horizon_hours, start=cycle_start)
 
             # 5. Predict consumption
             # Get recent loads for ML features
@@ -213,7 +229,7 @@ class PowerArbSystem:
                 )
 
             consumption_fc = self.ml_consumption.forecast(
-                hours=48, start=cycle_start,
+                hours=horizon_hours, start=cycle_start,
                 occupancy=occupancy, recent_loads_kw=recent_loads_kw,
                 ac_running=ac_running,
             )
@@ -222,12 +238,13 @@ class PowerArbSystem:
             n_periods = min(
                 len(dampened_import), len(dampened_export),
                 len(solar_fc), len(consumption_fc),
+                horizon_periods,
             )
             if n_periods == 0:
                 logger.error("No aligned forecast periods; skipping cycle")
                 return
 
-            self._using_custom = config.retailer.retailer == "custom" and config.retailer.custom_pricing_csv
+            self._using_custom = retailer_mode == "custom" and config.retailer.custom_pricing_csv
             using_custom = self._using_custom
             if using_custom:
                 import_cents = [dampened_import[i].per_kwh for i in range(n_periods)]
@@ -365,7 +382,7 @@ class PowerArbSystem:
                 dampened_import, dampened_export,
                 solar_fc, consumption_fc,
                 import_cents, export_cents, solar_kw, load_kw,
-                timestamps, n_periods,
+                timestamps, n_periods, horizon_hours,
             )
 
         except Exception as e:
@@ -379,7 +396,7 @@ class PowerArbSystem:
         dampened_import, dampened_export,
         solar_fc, consumption_fc,
         import_cents, export_cents, solar_kw, load_kw,
-        timestamps, n_periods,
+        timestamps, n_periods, horizon_hours,
     ):
         """Write dashboard_status.json atomically for the monitoring dashboard."""
         try:
@@ -498,6 +515,7 @@ class PowerArbSystem:
                     "foxess_last_read": cycle_start.isoformat(),
                     "optimizer_last_run": cycle_start.isoformat(),
                     "optimizer_execution_ms": self._cycle_ms,
+                    "optimizer_horizon_hours": horizon_hours,
                     "consecutive_failures": self._consecutive_failures,
                     "errors": list(self._errors),
                     "ml_price_model": "active" if self.ml_price._model_trained else "fallback",

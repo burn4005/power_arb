@@ -34,6 +34,12 @@ class AmberConfig:
 
 
 @dataclass(frozen=True)
+class FlowPowerConfig:
+    api_key: str = _env("FLOWPOWER_API_KEY", _env("AMBER_API_KEY", ""))
+    site_id: str = _env("FLOWPOWER_SITE_ID", "")  # auto-discovered if empty
+
+
+@dataclass(frozen=True)
 class SolcastConfig:
     api_key: str = _env("SOLCAST_API_KEY", required=True)
     resource_id: str = _env("SOLCAST_RESOURCE_ID", required=True)
@@ -78,13 +84,14 @@ class BatteryConfig:
 
 @dataclass(frozen=True)
 class RetailerConfig:
-    retailer: str = _env("RETAILER", "amber")  # 'amber' or 'custom'
+    retailer: str = _env("RETAILER", "amber")  # 'amber', 'flowpower', or 'custom'
     custom_pricing_csv: str = _env("CUSTOM_PRICING_CSV", "")
 
 
 @dataclass(frozen=True)
 class SystemConfig:
     scheduler_interval_s: int = _env_int("SCHEDULER_INTERVAL_SECONDS", 300)
+    optimizer_horizon_hours: int = _env_int("OPTIMIZER_HORIZON_HOURS", 48)
     log_level: str = _env("LOG_LEVEL", "INFO")
     db_path: str = _env("DB_PATH", "power_arb.db")
     timezone: str = _env("TIMEZONE", "Australia/Brisbane")
@@ -121,6 +128,7 @@ class MLConfig:
 
 # Singleton instances
 amber = AmberConfig()
+flowpower = FlowPowerConfig()
 solcast = SolcastConfig()
 foxess = FoxESSConfig()
 battery = BatteryConfig()

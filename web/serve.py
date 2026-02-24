@@ -106,6 +106,13 @@ def parse_csv_preview(csv_path: str) -> list[dict]:
 class DevHandler(http.server.SimpleHTTPRequestHandler):
     """Handler that serves static files and settings API endpoints."""
 
+    def end_headers(self):
+        # Avoid stale dashboards when backtest_data.json is regenerated.
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
     def _send_json(self, data, status=200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")

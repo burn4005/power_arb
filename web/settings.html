@@ -299,6 +299,7 @@
         <label for="retailer">Retailer</label>
         <select id="retailer" name="RETAILER">
           <option value="amber">Amber Electric</option>
+          <option value="flowpower">Flow Power</option>
           <option value="custom">Custom (CSV pricing file)</option>
         </select>
       </div>
@@ -338,6 +339,25 @@
       <div class="form-row">
         <label for="AMBER_SITE_ID">Site ID</label>
         <input type="text" id="AMBER_SITE_ID" name="AMBER_SITE_ID" placeholder="Auto-discovered if empty">
+      </div>
+      <div class="form-row"><div class="hint">Leave Site ID empty to auto-discover from your API key.</div></div>
+    </div>
+  </div>
+
+  <!-- Flow Power -->
+  <div class="section" id="flowpowerSection">
+    <div class="section-header">
+      <span class="icon">&#128267;</span>
+      <h2>Flow Power</h2>
+    </div>
+    <div class="section-body">
+      <div class="form-row">
+        <label for="FLOWPOWER_API_KEY">API Key</label>
+        <input type="password" id="FLOWPOWER_API_KEY" name="FLOWPOWER_API_KEY" placeholder="psk_...">
+      </div>
+      <div class="form-row">
+        <label for="FLOWPOWER_SITE_ID">Site ID</label>
+        <input type="text" id="FLOWPOWER_SITE_ID" name="FLOWPOWER_SITE_ID" placeholder="Auto-discovered if empty">
       </div>
       <div class="form-row"><div class="hint">Leave Site ID empty to auto-discover from your API key.</div></div>
     </div>
@@ -448,6 +468,11 @@
         <input type="number" id="SCHEDULER_INTERVAL_SECONDS" name="SCHEDULER_INTERVAL_SECONDS">
       </div>
       <div class="form-row">
+        <label for="OPTIMIZER_HORIZON_HOURS">Optimizer Horizon (h)</label>
+        <input type="number" id="OPTIMIZER_HORIZON_HOURS" name="OPTIMIZER_HORIZON_HOURS" min="6" max="48" step="1">
+      </div>
+      <div class="form-row"><div class="hint">Lookahead horizon for optimization. Allowed range: 6 to 48 hours.</div></div>
+      <div class="form-row">
         <label for="LOG_LEVEL">Log Level</label>
         <select id="LOG_LEVEL" name="LOG_LEVEL">
           <option value="DEBUG">DEBUG</option>
@@ -484,16 +509,20 @@
 // ── All env keys we manage ──────────────────────────────────────
 const ENV_KEYS = [
   'AMBER_API_KEY', 'AMBER_SITE_ID',
+  'FLOWPOWER_API_KEY', 'FLOWPOWER_SITE_ID',
   'SOLCAST_API_KEY', 'SOLCAST_RESOURCE_ID',
   'FOXESS_IP', 'FOXESS_PORT', 'FOXESS_SLAVE_ID',
   'BATTERY_CAPACITY_KWH', 'BATTERY_MAX_POWER_KW', 'BATTERY_MIN_SOC_PCT',
   'BATTERY_EFFICIENCY', 'BATTERY_COST_AUD', 'BATTERY_CYCLE_LIFE', 'GRID_EXPORT_LIMIT_KW',
   'MAX_CHARGE_PRICE_C', 'MIN_DISCHARGE_PRICE_C',
-  'SCHEDULER_INTERVAL_SECONDS', 'LOG_LEVEL', 'DB_PATH', 'TIMEZONE', 'DRY_RUN',
+  'SCHEDULER_INTERVAL_SECONDS', 'OPTIMIZER_HORIZON_HOURS', 'LOG_LEVEL', 'DB_PATH', 'TIMEZONE', 'DRY_RUN',
   'RETAILER', 'CUSTOM_PRICING_CSV',
 ];
 
 const CHECKBOX_KEYS = ['DRY_RUN'];
+const DEFAULTS = {
+  OPTIMIZER_HORIZON_HOURS: '48',
+};
 
 // ── Toast ────────────────────────────────────────────────────────
 function showToast(msg, type) {
@@ -513,7 +542,7 @@ async function loadSettings() {
     for (const key of ENV_KEYS) {
       const el = document.getElementById(key);
       if (!el) continue;
-      const val = data[key] || '';
+      const val = data[key] || DEFAULTS[key] || '';
       if (CHECKBOX_KEYS.includes(key)) {
         el.checked = val.toLowerCase() === 'true' || val === '1' || val === 'yes';
       } else if (el.tagName === 'SELECT') {
@@ -521,6 +550,13 @@ async function loadSettings() {
       } else {
         el.value = val;
       }
+    }
+
+    // If Flow Power key isn't explicitly set, mirror Amber key for convenience.
+    const amberKey = data['AMBER_API_KEY'] || '';
+    const flowKeyEl = document.getElementById('FLOWPOWER_API_KEY');
+    if (flowKeyEl && !flowKeyEl.value && amberKey) {
+      flowKeyEl.value = amberKey;
     }
 
     // Handle retailer dropdown
@@ -590,15 +626,26 @@ function updateRetailerUI() {
   const val = document.getElementById('retailer').value;
   const customArea = document.getElementById('customPricingArea');
   const amberSection = document.getElementById('amberSection');
+  const flowpowerSection = document.getElementById('flowpowerSection');
 
   if (val === 'custom') {
     customArea.classList.add('visible');
     amberSection.style.opacity = '0.4';
     amberSection.style.pointerEvents = 'none';
+    flowpowerSection.style.opacity = '0.4';
+    flowpowerSection.style.pointerEvents = 'none';
+  } else if (val === 'flowpower') {
+    customArea.classList.remove('visible');
+    amberSection.style.opacity = '0.4';
+    amberSection.style.pointerEvents = 'none';
+    flowpowerSection.style.opacity = '1';
+    flowpowerSection.style.pointerEvents = 'auto';
   } else {
     customArea.classList.remove('visible');
     amberSection.style.opacity = '1';
     amberSection.style.pointerEvents = 'auto';
+    flowpowerSection.style.opacity = '0.4';
+    flowpowerSection.style.pointerEvents = 'none';
   }
 }
 

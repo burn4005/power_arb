@@ -10,6 +10,7 @@ Run with: python -m pytest tests/test_annual_backtest.py -v -s
 import os
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from backtest.data_loader import load_aemo_prices, load_home_usage, load_solar_yield
 from backtest.runner import BacktestRunner
 import config
+from tests.backtest_web_export import export_result_to_web_json
 
 # Speed up by only checking date existence for dates in our AEMO set
 # (the _date_range method does an `any()` check per date otherwise)
@@ -53,6 +55,10 @@ class TestAnnualBacktest:
         )
         cls.result = runner.run()
         cls.result.print_summary()
+        out = export_result_to_web_json(
+            cls.result, str(Path(__file__).resolve().parents[1] / "web" / "backtest_data.json")
+        )
+        print(f"  Exported web data: {out}")
 
     def test_annual_backtest_full(self):
         """Run the full backtest and verify the optimizer is profitable."""

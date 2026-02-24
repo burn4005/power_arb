@@ -350,7 +350,7 @@ function periodsPerSec(s) {
 }
 
 // ─── Load Data ───────────────────────────────────────────────
-fetch('backtest_data.json')
+fetch('backtest_data.json?t=' + Date.now())
   .then(r => r.json())
   .then(data => {
     D = data;

@@ -1514,7 +1514,7 @@ function startSimulation() {
   document.getElementById('simToggleLink').href = 'dashboard.html';
   document.getElementById('loadingMsg').textContent = 'Loading backtest data...';
 
-  fetch('backtest_data.json')
+  fetch('backtest_data.json?t=' + Date.now())
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(data => {
       simData = data;
