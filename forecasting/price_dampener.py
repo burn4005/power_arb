@@ -1,5 +1,6 @@
 import logging
 import math
+import statistics
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -76,7 +77,7 @@ class PriceDampener:
         self._calibrated_alphas = {}
         for bucket, ratios in buckets.items():
             ratios.sort()
-            median_ratio = ratios[len(ratios) // 2]
+            median_ratio = statistics.median(ratios)
             # Alpha represents how much of the forecast to keep
             # If forecasts are accurate, ratio ~ 1.0 and alpha ~ 1.0
             # If forecasts overshoot, ratio < 1.0 and alpha < 1.0
@@ -106,8 +107,8 @@ class PriceDampener:
             default = self._tod_medians.get(hour, (15.0, 5.0))
             import_vals = tod_import.get(hour)
             export_vals = tod_export.get(hour)
-            import_med = sorted(import_vals)[len(import_vals) // 2] if import_vals else default[0]
-            export_med = sorted(export_vals)[len(export_vals) // 2] if export_vals else default[1]
+            import_med = statistics.median(import_vals) if import_vals else default[0]
+            export_med = statistics.median(export_vals) if export_vals else default[1]
             self._tod_medians[hour] = (import_med, export_med)
 
     def dampen(
@@ -174,7 +175,7 @@ class PriceDampener:
             # Extra compression for extreme values using log dampening
             if dampened > median * 5:
                 excess = dampened - median
-                dampened = median + math.log1p(excess) * median
+                dampened = median + math.log1p(excess / median) * median
             return max(0, dampened), confidence
 
         # Long term: mostly historical with light forecast influence

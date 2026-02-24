@@ -5,7 +5,7 @@ import numpy as np
 
 import config
 from optimizer.actions import Action
-from optimizer.battery_model import BatteryModel, PeriodInputs, PERIOD_HOURS
+from optimizer.battery_model import BatteryModel, PeriodInputs, PERIOD_HOURS, PERIODS_PER_HOUR
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ class DPOptimizer:
         # Pre-compute SoC grid
         self.soc_levels = np.arange(self.min_soc, self.capacity + SOC_STEP, SOC_STEP)
         self.n_states = len(self.soc_levels)
-        self.soc_to_idx = {round(s, 2): i for i, s in enumerate(self.soc_levels)}
+        self.soc_to_idx = {int(round(s / SOC_STEP)): i for i, s in enumerate(self.soc_levels)}
 
     def optimize(
         self,
@@ -89,7 +89,7 @@ class DPOptimizer:
 
             # Average import price over the next 24 hours from t — used as the
             # "expected future price" benchmark for grid charge decisions.
-            lookahead_end = min(t + 12 * 24, n_periods)  # 24h = 288 periods
+            lookahead_end = min(t + 24 * PERIODS_PER_HOUR, n_periods)
             avg_future_import = float(np.mean(import_prices[t:lookahead_end]))
 
             for a_idx, action in enumerate(actions):
@@ -149,15 +149,30 @@ class DPOptimizer:
                 best_values[better] = total_value[better]
                 best_actions[better] = a_idx
 
+            # Guard: if all actions were pruned for some states, fall back to SELF_USE
+            all_pruned = np.isinf(best_values) & (best_values < 0)
+            if np.any(all_pruned):
+                self_use_idx = actions.index(Action.SELF_USE)
+                new_soc, profit = self.model.apply_action_vec(
+                    soc_arr, Action.SELF_USE,
+                    solar_forecast[t], load_forecast[t],
+                    import_prices[t], export_prices[t],
+                )
+                fallback_s_idx = np.clip(
+                    np.round((new_soc - self.min_soc) / SOC_STEP).astype(int),
+                    0, self.n_states - 1,
+                )
+                fallback_value = profit + V[t + 1][fallback_s_idx]
+                best_values[all_pruned] = fallback_value[all_pruned]
+                best_actions[all_pruned] = self_use_idx
+
             V[t] = best_values
             policy[t] = best_actions
 
         # Forward pass: trace optimal schedule from current SoC
-        current_soc_disc = round(
-            round(self.model.clamp_soc(current_soc_kwh) / SOC_STEP) * SOC_STEP, 2
-        )
+        current_soc_key = int(round(self.model.clamp_soc(current_soc_kwh) / SOC_STEP))
         s_idx = self.soc_to_idx.get(
-            current_soc_disc,
+            current_soc_key,
             min(range(self.n_states),
                 key=lambda i: abs(self.soc_levels[i] - current_soc_kwh))
         )
@@ -183,15 +198,16 @@ class DPOptimizer:
 
             # Advance to next state
             new_soc_clamped = self.model.clamp_soc(result.new_soc_kwh)
-            new_soc_disc = round(
-                round(new_soc_clamped / SOC_STEP) * SOC_STEP, 2
-            )
+            new_soc_key = int(round(new_soc_clamped / SOC_STEP))
             s_idx = self.soc_to_idx.get(
-                new_soc_disc,
+                new_soc_key,
                 min(range(self.n_states),
                     key=lambda i: abs(self.soc_levels[i] - new_soc_clamped))
             )
             soc = self.soc_levels[s_idx]
+
+        # Append final SoC after last period
+        soc_trajectory.append(float(soc))
 
         # The optimal action for the current period
         current_action = schedule[0][1] if schedule else Action.SELF_USE

@@ -1,0 +1,17 @@
+__pycache__/config.cpython-313.pyc
+__pycache__/main.cpython-313.pyc
+forecasting/__pycache__/consumption.cpython-313.pyc
+forecasting/__pycache__/ml_consumption.cpython-313.pyc
+forecasting/__pycache__/ml_price.cpython-313.pyc
+forecasting/__pycache__/price_dampener.cpython-313.pyc
+forecasting/__pycache__/solar.cpython-313.pyc
+amber/__pycache__/client.cpython-313.pyc
+foxess/__pycache__/modbus_client.cpython-313.pyc
+homeassistant/__pycache__/client.cpython-313.pyc
+optimizer/__pycache__/battery_model.cpython-313.pyc
+optimizer/__pycache__/dp_optimizer.cpython-313.pyc
+pricing/__pycache__/custom_csv.cpython-313.pyc
+solcast/__pycache__/client.cpython-313.pyc
+storage/__pycache__/database.cpython-313.pyc
+tests/__pycache__/test_price_dampener.cpython-313-pytest-9.0.2.pyc
+weather/__pycache__/client.cpython-313.pyc

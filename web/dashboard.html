@@ -561,11 +561,11 @@
 </div>
 <div class="chart-row">
   <div class="chart-container">
-    <div class="chart-title">Battery SoC (kWh)</div>
+    <div class="chart-title">Battery SoC (%)</div>
     <canvas id="chartSoc"></canvas>
   </div>
   <div class="chart-container">
-    <div class="chart-title">Battery Temperature</div>
+    <div class="chart-title">Battery + Inverter Temperature</div>
     <canvas id="chartTemp"></canvas>
   </div>
 </div>
@@ -634,7 +634,7 @@
   <div class="stat-card">
     <div class="label">Battery Temp</div>
     <div class="value" id="battTemp">--</div>
-    <div class="sub">degrees C</div>
+    <div class="sub" id="invTemp">Inverter: -- C</div>
   </div>
 </div>
 
@@ -642,9 +642,9 @@
 <div class="section-header"><div class="section-title">System Health</div></div>
 <div class="stats-bar cols-4">
   <div class="stat-card">
-    <div class="label">Amber API</div>
-    <div class="value" id="amberStatus"><span class="health-dot ok"></span>--</div>
-    <div class="sub" id="amberSub">-- prices loaded</div>
+    <div class="label">Pricing Source</div>
+    <div class="value" id="pricingStatus"><span class="health-dot ok"></span>--</div>
+    <div class="sub" id="pricingSub">-- prices loaded</div>
   </div>
   <div class="stat-card">
     <div class="label">Solcast API</div>
@@ -711,6 +711,8 @@ const ACTION_NUM_LABELS = ['Disabled', 'Discharge', 'Hold', 'No Export', 'Self U
 
 let viewHours = 12;
 let lastData = null;
+let settingsPricingSourceLabel = null;
+let settingsFetchAttempted = false;
 
 // ── Chart defaults ──────────────────────────────────────────────
 function chartDefaults() {
@@ -773,6 +775,107 @@ function centsToAud(c) {
   const aud = Math.abs(c) / 100;
   const prefix = c < 0 ? '-' : '';
   return prefix + '$' + aud.toFixed(2);
+}
+
+function finiteNumbers(arr) {
+  return (arr || []).filter(v => typeof v === 'number' && Number.isFinite(v));
+}
+
+function applyMinWindowYScale(scale, seriesList, baseMin, baseMax, padFrac = 0.05, padAbs = 0.1) {
+  const values = (seriesList || []).flatMap(finiteNumbers);
+  let yMin = baseMin;
+  let yMax = baseMax;
+  if (values.length > 0) {
+    const dataMin = Math.min(...values);
+    const dataMax = Math.max(...values);
+    const span = Math.max(Math.abs(dataMax - dataMin), 1e-6);
+    const pad = Math.max(padAbs, span * padFrac);
+    if (dataMin < yMin) yMin = dataMin - pad;
+    if (dataMax > yMax) yMax = dataMax + pad;
+  }
+  if (yMax <= yMin) yMax = yMin + 1;
+  scale.min = yMin;
+  scale.max = yMax;
+}
+
+function firstPeriodHours(timestamps) {
+  const arr = Array.isArray(timestamps) ? timestamps : [];
+  for (let i = 0; i < arr.length - 1; i++) {
+    const t0 = new Date(arr[i]).getTime();
+    const t1 = new Date(arr[i + 1]).getTime();
+    const dtHours = (t1 - t0) / 3600000;
+    if (Number.isFinite(dtHours) && dtHours > 0) return dtHours;
+  }
+  return null;
+}
+
+function inferPeriodHours(histTimestamps, fcTimestamps) {
+  return firstPeriodHours(fcTimestamps) || firstPeriodHours(histTimestamps) || (5 / 60);
+}
+
+function deriveForecastBatteryKw(fcSocKwh, fcTimestamps, histTimestamps) {
+  const soc = Array.isArray(fcSocKwh) ? fcSocKwh : [];
+  const targetLen = Array.isArray(fcTimestamps) ? fcTimestamps.length : 0;
+  if (soc.length < 2 || targetLen <= 0) return new Array(targetLen).fill(null);
+
+  const periodHours = inferPeriodHours(histTimestamps, fcTimestamps);
+  const out = [];
+  for (let i = 0; i < soc.length - 1; i++) {
+    const s0 = soc[i];
+    const s1 = soc[i + 1];
+    out.push(
+      (typeof s0 === 'number' && Number.isFinite(s0) &&
+       typeof s1 === 'number' && Number.isFinite(s1))
+        ? ((s1 - s0) / periodHours)
+        : null
+    );
+  }
+  if (out.length > targetLen) out.length = targetLen;
+  while (out.length < targetLen) out.push(null);
+  return out;
+}
+
+function csvStem(pathStr) {
+  const raw = String(pathStr || '').trim();
+  if (!raw) return '';
+  const base = raw.split(/[\\/]/).pop() || '';
+  return base.replace(/\.[^.]+$/, '');
+}
+
+async function fetchPricingSourceFromSettings() {
+  if (settingsFetchAttempted) return;
+  settingsFetchAttempted = true;
+  try {
+    const resp = await fetch('/api/settings');
+    if (!resp.ok) return;
+    const env = await resp.json();
+    const retailer = String(env.RETAILER || '').toLowerCase();
+    if (retailer === 'flowpower') {
+      settingsPricingSourceLabel = 'FlowPower';
+    } else if (retailer === 'amber') {
+      settingsPricingSourceLabel = 'Amber';
+    } else if (retailer === 'custom') {
+      settingsPricingSourceLabel = csvStem(env.CUSTOM_PRICING_CSV) || 'Custom CSV';
+    }
+    if (lastData) updateDashboard(lastData);
+  } catch (_) {
+    // Best-effort fallback only.
+  }
+}
+
+function getPricingSourceLabel(sh) {
+  const explicit = (sh && typeof sh.pricing_source_label === 'string')
+    ? sh.pricing_source_label.trim()
+    : '';
+  if (explicit) return explicit;
+  const provider = String((sh && sh.pricing_provider) || '').toLowerCase();
+  if (provider === 'flowpower') return 'FlowPower';
+  if (provider === 'amber') return 'Amber';
+  if (provider === 'custom') return 'Custom CSV';
+  if (provider === 'sim') return 'Simulation';
+  if (settingsPricingSourceLabel) return settingsPricingSourceLabel;
+  if (sh && (sh.amber_status || sh.amber_prices_count)) return 'Pricing';
+  return provider ? provider.toUpperCase() : 'Unknown';
 }
 
 // ── Build merged timeline ───────────────────────────────────────
@@ -861,9 +964,9 @@ function createCharts() {
   chartPrices = new Chart(document.getElementById('chartPrices').getContext('2d'), {
     type: 'line',
     data: { labels: [], datasets: [
-      { label: 'Import (Amber)', data: [], borderColor: '#f85149', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+      { label: 'Import', data: [], borderColor: '#f85149', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
       { label: 'Import (dampened)', data: [], borderColor: '#f8514980', borderWidth: 1.5, pointRadius: 0, tension: 0.1, borderDash: [4, 3] },
-      { label: 'Export (Amber)', data: [], borderColor: '#3fb950', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
+      { label: 'Export', data: [], borderColor: '#3fb950', borderWidth: 1.5, pointRadius: 0, tension: 0.1 },
       { label: 'Export (dampened)', data: [], borderColor: '#3fb95080', borderWidth: 1.5, pointRadius: 0, tension: 0.1, borderDash: [4, 3] },
     ]},
     options: optsP,
@@ -886,13 +989,28 @@ function createCharts() {
   // SoC
   const optsSoc = chartDefaults();
   optsSoc.plugins.annotation = { annotations: {} };
-  optsSoc.scales.y = { ...optsSoc.scales.y, min: 0 };
+  optsSoc.scales.y = {
+    ...optsSoc.scales.y,
+    min: 0,
+    max: 100,
+    title: { display: true, text: '%', color: '#484f58', font: { size: 10 } },
+    ticks: {
+      ...optsSoc.scales.y.ticks,
+      callback: v => `${v}%`,
+    },
+  };
   chartSoc = new Chart(document.getElementById('chartSoc').getContext('2d'), {
     type: 'line',
     data: { labels: [], datasets: [
-      { label: 'SoC (actual)', data: [], borderColor: '#58a6ff', borderWidth: 2, pointRadius: 0, tension: 0.2,
-        fill: true, backgroundColor: 'rgba(88,166,255,0.08)' },
-      { label: 'SoC (predicted)', data: [], borderColor: '#58a6ff', borderWidth: 2, pointRadius: 0, tension: 0.1,
+      { label: 'SoC (actual %)', data: [], borderColor: '#58a6ff', borderWidth: 2, pointRadius: 0, tension: 0.2,
+        fill: true, backgroundColor: 'rgba(88,166,255,0.08)', segment: {
+          borderColor: ctx => {
+            const ac = chartSoc._actualActionColors;
+            if (!ac || !ac[ctx.p0DataIndex]) return '#58a6ff';
+            return ac[ctx.p0DataIndex];
+          },
+        }},
+      { label: 'SoC (predicted %)', data: [], borderColor: '#58a6ff', borderWidth: 2, pointRadius: 0, tension: 0.1,
         borderDash: [5, 3], segment: {
           borderColor: ctx => {
             const ac = chartSoc._actionColors;
@@ -903,17 +1021,20 @@ function createCharts() {
     ]},
     options: optsSoc,
   });
+  chartSoc._actualActionColors = [];
   chartSoc._actionColors = [];
 
   // Temperature
   const optsT = chartDefaults();
   optsT.plugins.annotation = { annotations: {} };
-  optsT.plugins.legend = { display: false };
+  optsT.plugins.legend = { ...optsT.plugins.legend, display: true };
   chartTemp = new Chart(document.getElementById('chartTemp').getContext('2d'), {
     type: 'line',
     data: { labels: [], datasets: [
       { label: 'Battery Temp', data: [], borderColor: '#f0883e', borderWidth: 1.5, pointRadius: 0, tension: 0.3,
         fill: true, backgroundColor: 'rgba(240,136,62,0.08)' },
+      { label: 'Inverter Internal Temp', data: [], borderColor: '#58a6ff', borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+        fill: false },
     ]},
     options: optsT,
   });
@@ -929,12 +1050,20 @@ function createCharts() {
     data: { labels: [], datasets: [
       { label: 'PV', data: [], borderColor: '#f0c000', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
         fill: true, backgroundColor: 'rgba(240,192,0,0.10)' },
+      { label: 'PV (pred)', data: [], borderColor: '#f0c000', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
+        borderDash: [5, 3], fill: false },
       { label: 'Battery', data: [], borderColor: '#58a6ff', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
         fill: true, backgroundColor: 'rgba(88,166,255,0.10)' },
+      { label: 'Battery (pred)', data: [], borderColor: '#58a6ff', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
+        borderDash: [5, 3], fill: false },
       { label: 'Grid', data: [], borderColor: '#f85149', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
         fill: true, backgroundColor: 'rgba(248,81,73,0.10)' },
+      { label: 'Grid (pred)', data: [], borderColor: '#f85149', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
+        borderDash: [5, 3], fill: false },
       { label: 'House', data: [], borderColor: '#f0883e', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
         fill: true, backgroundColor: 'rgba(240,136,62,0.10)' },
+      { label: 'House (pred)', data: [], borderColor: '#f0883e', borderWidth: 1.5, pointRadius: 0, tension: 0.2,
+        borderDash: [5, 3], fill: false },
     ]},
     options: optsEF,
   });
@@ -1054,11 +1183,17 @@ function updateDashboard(D) {
   document.getElementById('battMinSoc').textContent = 'Min SoC: ' + bh.min_soc_kwh.toFixed(1) + ' kWh';
   document.getElementById('battMaxPower').textContent = bh.max_power_kw.toFixed(1);
   document.getElementById('battTemp').textContent = live.battery_temp_c.toFixed(1);
+  const invTemp = Number(live.inverter_internal_temp_c);
+  document.getElementById('invTemp').textContent =
+    Number.isFinite(invTemp) ? ('Inverter: ' + invTemp.toFixed(1) + ' C') : 'Inverter: -- C';
 
   // System health
-  document.getElementById('amberStatus').innerHTML =
-    `<span class="health-dot ${sh.amber_status === 'ok' ? 'ok' : 'error'}"></span>${sh.amber_status.toUpperCase()}`;
-  document.getElementById('amberSub').textContent = sh.amber_prices_count + ' prices loaded';
+  const pricingStatus = sh.pricing_status || 'unknown';
+  const pricingSourceLabel = getPricingSourceLabel(sh);
+  const pricingIntervals = (sh.pricing_intervals ?? 0);
+  document.getElementById('pricingStatus').innerHTML =
+    `<span class="health-dot ${pricingStatus === 'ok' ? 'ok' : (pricingStatus === 'sim' ? 'warn' : 'error')}"></span>${pricingSourceLabel}: ${String(pricingStatus).toUpperCase()}`;
+  document.getElementById('pricingSub').textContent = pricingIntervals + ' prices loaded';
 
   document.getElementById('solcastStatus').innerHTML =
     `<span class="health-dot ${sh.solcast_status === 'ok' ? 'ok' : 'warn'}"></span>${sh.solcast_status.toUpperCase()}`;
@@ -1091,6 +1226,7 @@ function updateDashboard(D) {
 function updateTimelineCharts(D) {
   const hist = D.history || {};
   const fc = D.forecast || {};
+  const sh = D.system_health || {};
   const bh = D.battery_health;
   const t = buildTimeline(D);
 
@@ -1109,9 +1245,12 @@ function updateTimelineCharts(D) {
   const exportRaw = histExport.map((v, i) => v !== null ? v : fcRawExport[i]);
   const exportDamp = fcDampExport; // only forecast
 
+  const pricingSourceLabel = getPricingSourceLabel(sh);
   chartPrices.data.labels = t.labels;
+  chartPrices.data.datasets[0].label = `Import (${pricingSourceLabel})`;
   chartPrices.data.datasets[0].data = importRaw;
   chartPrices.data.datasets[1].data = importDamp;
+  chartPrices.data.datasets[2].label = `Export (${pricingSourceLabel})`;
   chartPrices.data.datasets[2].data = exportRaw;
   chartPrices.data.datasets[3].data = exportDamp;
   chartPrices.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
@@ -1134,45 +1273,66 @@ function updateTimelineCharts(D) {
   chartSolarLoad.data.datasets[1].data = fcP10; // P10 band (forecast only)
   chartSolarLoad.data.datasets[2].data = fcP90; // P90 band (forecast only)
   chartSolarLoad.data.datasets[3].data = loadMerged;
+  applyMinWindowYScale(
+    chartSolarLoad.options.scales.y,
+    [solarMerged, fcP10, fcP90, loadMerged],
+    0,
+    10,
+    0.05,
+    0.2
+  );
   chartSolarLoad.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
   chartSolarLoad.update();
 
   // ── SoC chart ────────────────────────────────────────────────
   // Two datasets: actual (history) and predicted (forecast)
-  const socActual = t.histOnly(hist.soc_kwh);
-  const socPredicted = t.fcOnly(fc.soc_trajectory_kwh);
+  const capacityKwh = (bh && typeof bh.capacity_kwh === 'number' && bh.capacity_kwh > 0)
+    ? bh.capacity_kwh
+    : null;
+  const toSocPct = (v) => (typeof v === 'number' && Number.isFinite(v) && capacityKwh)
+    ? (v / capacityKwh) * 100.0
+    : null;
+  const socActual = t.histOnly(hist.soc_kwh).map(toSocPct);
+  const socPredicted = t.fcOnly(fc.soc_trajectory_kwh).map(toSocPct);
 
   chartSoc.data.labels = t.labels;
   chartSoc.data.datasets[0].data = socActual;
   chartSoc.data.datasets[1].data = socPredicted;
+
+  // Color actual segments by realized historical action (solid line)
+  const actualActionsArr = t.histOnly(hist.action);
+  chartSoc._actualActionColors = actualActionsArr.map(a => a ? (ACTION_COLORS[a] || '#58a6ff') : '#58a6ff');
 
   // Color predicted segments by action
   const actionsArr = t.fcOnly(fc.schedule_action);
   chartSoc._actionColors = actionsArr.map(a => a ? (ACTION_COLORS[a] || '#58a6ff') : '#58a6ff');
 
   const annotations = nowAnnotation(t.nowIdx);
-  if (bh) {
+  if (bh && capacityKwh) {
     annotations.capacity = {
-      type: 'line', yMin: bh.capacity_kwh, yMax: bh.capacity_kwh,
+      type: 'line', yMin: 100, yMax: 100,
       borderColor: '#f85149', borderWidth: 1, borderDash: [4, 4],
       label: { display: true, content: 'Capacity', color: '#f85149', font: { size: 10 },
                position: 'end', backgroundColor: 'transparent' },
     };
+    const minSocPct = (bh.min_soc_kwh / capacityKwh) * 100.0;
     annotations.minSoc = {
-      type: 'line', yMin: bh.min_soc_kwh, yMax: bh.min_soc_kwh,
+      type: 'line', yMin: minSocPct, yMax: minSocPct,
       borderColor: '#d29922', borderWidth: 1, borderDash: [4, 4],
       label: { display: true, content: 'Min SoC', color: '#d29922', font: { size: 10 },
                position: 'end', backgroundColor: 'transparent' },
     };
-    chartSoc.options.scales.y.max = bh.capacity_kwh * 1.05;
   }
+  applyMinWindowYScale(chartSoc.options.scales.y, [socActual, socPredicted], 0, 100, 0.03, 1.0);
   chartSoc.options.plugins.annotation.annotations = annotations;
   chartSoc.update();
 
   // ── Temperature chart ────────────────────────────────────────
   const tempData = t.histOnly(hist.battery_temp_c);
+  const inverterTempData = t.histOnly(hist.inverter_internal_temp_c);
   chartTemp.data.labels = t.labels;
   chartTemp.data.datasets[0].data = tempData;
+  chartTemp.data.datasets[1].data = inverterTempData;
   chartTemp.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
   chartTemp.update();
 
@@ -1182,30 +1342,76 @@ function updateTimelineCharts(D) {
   const battFlow = t.histOnly(hist.battery_power_kw);
   const gridRaw = t.histOnly(hist.grid_power_kw);
   const loadRaw = t.histOnly(hist.load_power_kw);
+  const fcBattRawKw = deriveForecastBatteryKw(
+    fc.soc_trajectory_kwh,
+    fc.timestamps || [],
+    hist.timestamps || []
+  );
+  const fcBattFlow = t.fcOnly(fcBattRawKw);
+  const fcHouseFlow = fcLoad.map(v => v !== null ? -v : null);
+  const fcGridFlow = fcSolar.map((pv, i) => {
+    const ld = fcLoad[i];
+    const bt = fcBattFlow[i];
+    if (pv === null || ld === null || bt === null) return null;
+    // Keep forecast sign convention aligned with history transform.
+    return pv - ld - bt;
+  });
   // Negate grid (import was +ve in raw) and house (consumption was +ve in raw)
   const gridFlow = gridRaw.map(v => v !== null ? -v : null);
   const houseFlow = loadRaw.map(v => v !== null ? -v : null);
 
   chartEnergyFlow.data.labels = t.labels;
   chartEnergyFlow.data.datasets[0].data = pvFlow;
-  chartEnergyFlow.data.datasets[1].data = battFlow;
-  chartEnergyFlow.data.datasets[2].data = gridFlow;
-  chartEnergyFlow.data.datasets[3].data = houseFlow;
+  chartEnergyFlow.data.datasets[1].data = fcSolar;
+  chartEnergyFlow.data.datasets[2].data = battFlow;
+  chartEnergyFlow.data.datasets[3].data = fcBattFlow;
+  chartEnergyFlow.data.datasets[4].data = gridFlow;
+  chartEnergyFlow.data.datasets[5].data = fcGridFlow;
+  chartEnergyFlow.data.datasets[6].data = houseFlow;
+  chartEnergyFlow.data.datasets[7].data = fcHouseFlow;
   const efAnnotations = nowAnnotation(t.nowIdx);
   efAnnotations.zeroLine = {
     type: 'line', yMin: 0, yMax: 0, borderColor: '#30363d', borderWidth: 1,
   };
+  applyMinWindowYScale(
+    chartEnergyFlow.options.scales.y,
+    [pvFlow, fcSolar, battFlow, fcBattFlow, gridFlow, fcGridFlow, houseFlow, fcHouseFlow],
+    -10,
+    10,
+    0.05,
+    0.2
+  );
   chartEnergyFlow.options.plugins.annotation.annotations = efAnnotations;
   chartEnergyFlow.update();
 
   // ── Schedule profit chart ────────────────────────────────────
-  const profitData = t.fcOnly(fc.schedule_profit_c);
-  const profitActions = t.fcOnly(fc.schedule_action);
+  const histImportPrice = t.histOnly(hist.import_price_c);
+  const histExportPrice = t.histOnly(hist.export_price_c);
+  const periodHours = inferPeriodHours(hist.timestamps || [], fc.timestamps || []);
+  const histProfit = gridRaw.map((g, i) => {
+    if (g === null) return null;
+    const importKwh = g > 0 ? g * periodHours : 0;
+    const exportKwh = g < 0 ? (-g) * periodHours : 0;
+    const impP = histImportPrice[i];
+    const expP = histExportPrice[i];
+    if ((importKwh > 0 && (impP === null || !Number.isFinite(impP))) ||
+        (exportKwh > 0 && (expP === null || !Number.isFinite(expP)))) {
+      return null;
+    }
+    const importCost = importKwh > 0 ? importKwh * impP : 0;
+    const exportRev = exportKwh > 0 ? exportKwh * expP : 0;
+    return exportRev - importCost;
+  });
+  const fcProfit = t.fcOnly(fc.schedule_profit_c);
+  const profitData = histProfit.map((v, i) => v !== null ? v : fcProfit[i]);
   chartProfit.data.labels = t.labels;
   chartProfit.data.datasets[0].data = profitData;
-  chartProfit.data.datasets[0].backgroundColor = profitActions.map(a =>
-    a ? ((ACTION_COLORS[a] || '#58a6ff') + '99') : 'transparent'
+  chartProfit.data.datasets[0].backgroundColor = profitData.map(v =>
+    v === null
+      ? 'transparent'
+      : (v > 0 ? 'rgba(63,185,80,0.75)' : (v < 0 ? 'rgba(248,81,73,0.75)' : 'rgba(139,148,158,0.45)'))
   );
+  applyMinWindowYScale(chartProfit.options.scales.y, [profitData], -25, 25, 0.05, 0.5);
   chartProfit.options.plugins.annotation.annotations = nowAnnotation(t.nowIdx);
   chartProfit.update();
 
@@ -1284,6 +1490,15 @@ async function poll() {
     const resp = await fetch('dashboard_status.json?t=' + Date.now());
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
+    if (
+      !settingsFetchAttempted &&
+      data &&
+      data.system_health &&
+      !data.system_health.pricing_provider &&
+      !data.system_health.pricing_source_label
+    ) {
+      fetchPricingSourceFromSettings();
+    }
     hasEverLoaded = true;
     lastData = data;
     document.getElementById('loading').style.display = 'none';
@@ -1308,6 +1523,7 @@ async function poll() {
 }
 
 function startPolling() {
+  fetchPricingSourceFromSettings();
   poll();
   pollTimer = setInterval(poll, POLL_INTERVAL);
 }
@@ -1397,6 +1613,7 @@ function buildSimDashboard(B, idx) {
       soc_pct: (B.soc_kwh[idx] / capacity) * 100,
       soc_kwh: B.soc_kwh[idx],
       battery_temp_c: 25.0,
+      inverter_internal_temp_c: 30.0,
       min_soc_pct: (B.metadata.min_soc_kwh / capacity) * 100,
       import_price_c: B.import_price_c[idx],
       export_price_c: B.export_price_c[idx],
@@ -1434,6 +1651,7 @@ function buildSimDashboard(B, idx) {
       grid_power_kw: Array.from({length: hLen}, (_, k) => gridKw(histStart + k)),
       battery_power_kw: Array.from({length: hLen}, (_, k) => battKw(histStart + k)),
       battery_temp_c: new Array(hLen).fill(null),
+      inverter_internal_temp_c: new Array(hLen).fill(null),
       import_price_c: histSlice(B.import_price_c),
       export_price_c: histSlice(B.export_price_c),
       action: histSlice(B.action),
@@ -1453,9 +1671,11 @@ function buildSimDashboard(B, idx) {
       cycle_life: B.metadata.cycle_life,
     },
     system_health: {
-      amber_last_fetch: simToISO(B.timestamps[idx]),
-      amber_status: 'sim',
-      amber_prices_count: fcActions.length,
+      pricing_provider: 'sim',
+      pricing_source_label: 'Simulation',
+      pricing_last_fetch: simToISO(B.timestamps[idx]),
+      pricing_status: 'sim',
+      pricing_intervals: fcActions.length,
       solcast_last_fetch: simToISO(B.timestamps[idx]),
       solcast_status: 'sim',
       solcast_calls_today: 1,
@@ -1582,3 +1802,4 @@ if (SIM_MODE) {
 </script>
 </body>
 </html>
+

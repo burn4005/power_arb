@@ -41,6 +41,11 @@ class MLConsumptionForecaster:
         self._model_path = self._model_dir / "consumption_model.joblib"
         self._load_model()
 
+    @property
+    def model_trained(self) -> bool:
+        """Whether the ML model has been trained and is active."""
+        return self._model_trained
+
     def _load_model(self):
         if self._model_path.exists():
             try:
@@ -160,7 +165,7 @@ class MLConsumptionForecaster:
                     weather.get("sunrise"), weather.get("sunset"),
                 ))
 
-            profile_kw = self.fallback._predict_slot(ts)
+            profile_kw = self.fallback.predict_slot(ts)
 
             # For near-term periods, use actual AC state from HA.
             # For future periods, AC state decays: assume AC stays on if

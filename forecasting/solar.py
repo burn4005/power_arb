@@ -20,7 +20,11 @@ class SolarForecaster:
         self.solcast = solcast_client
 
     def forecast(
-        self, hours: int = 48, start: datetime | None = None, conservative: bool = False
+        self,
+        hours: int = 48,
+        start: datetime | None = None,
+        conservative: bool = False,
+        allow_api_fetch: bool = True,
     ) -> list[dict]:
         """Get solar forecast aligned to 5-min periods.
 
@@ -28,10 +32,11 @@ class SolarForecaster:
             hours: forecast horizon
             start: start time (default: now, rounded to 5-min)
             conservative: if True, use P10 (pessimistic) instead of P50
+            allow_api_fetch: if False, use cached Solcast data only
 
         Returns list of dicts: timestamp, solar_kw, solar_kwh (per 5-min).
         """
-        raw = self.solcast.get_forecast()
+        raw = self.solcast.get_forecast(allow_fetch=allow_api_fetch)
         if not raw:
             logger.warning("No solar forecast available; assuming 0 production")
             return self._zero_forecast(hours, start)

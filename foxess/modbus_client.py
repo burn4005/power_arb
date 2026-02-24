@@ -36,7 +36,7 @@ class KHRegisters:
 
     Monitoring registers (read-only in practice):
       31002–31005  PV power
-      31020–31029  Battery parameters + BMS
+      31019–31029  Inverter internal temp + battery parameters + BMS
       31049–31054  Grid CT (32-bit) + load
 
     Control registers (read/write):
@@ -54,6 +54,9 @@ class KHRegisters:
     PV2_VOLTAGE   = 31003   # ÷10 = V
     PV2_CURRENT   = 31004   # ÷10 = A
     PV2_POWER     = 31005   # raw = W
+
+    # -- Inverter thermal (single point read in batch A extension) --
+    INTERNAL_TEMP     = 31019  # ÷10 = °C (inverter internal temperature)
 
     # -- Battery / BMS (batch A: 31020–31029, 10 registers) --
     BATTERY_VOLTAGE      = 31020  # ÷10 = V
@@ -97,6 +100,7 @@ class InverterState:
     grid_power_w: int       # positive = importing, negative = exporting
     load_power_w: int       # home consumption
     battery_temp_c: float
+    inverter_internal_temp_c: float
     work_mode: WorkMode
     min_soc_pct: int
     bms_max_charge_w: int   # BMS-reported max charge power (W)
@@ -184,21 +188,22 @@ class FoxESSModbusClient:
             return None
 
         try:
-            # Batch A: 31020–31029 — battery V/I/P, temp, SoC, BMS limits, BMS state
-            bat = self._read_holding_registers(KHRegisters.BATTERY_VOLTAGE, 10)
+            # Batch A: 31019–31029 — inverter internal temp + battery/BMS block
+            bat = self._read_holding_registers(KHRegisters.INTERNAL_TEMP, 11)
             if bat is None:
-                logger.error("Failed to read battery registers (31020-31029)")
+                logger.error("Failed to read battery/internal-temp registers (31019-31029)")
                 return None
 
-            battery_voltage_v = bat[0] / 10.0                  # 31020
-            battery_current_a = _to_signed16(bat[1]) / 10.0    # 31021
-            battery_power_w   = _to_signed16(bat[2])            # 31022
-            battery_temp_c    = _to_signed16(bat[3]) / 10.0    # 31023
-            battery_soc       = bat[4]                           # 31024
-            bms_max_charge_a  = bat[5] / 10.0                   # 31025
-            bms_max_discharge_a = bat[6] / 10.0                 # 31026
-            # bat[7] = inverter state (31027), bat[8] = reserved (31028)
-            bms_connect_state = bat[9]                           # 31029
+            inverter_internal_temp_c = _to_signed16(bat[0]) / 10.0  # 31019
+            battery_voltage_v = bat[1] / 10.0                        # 31020
+            battery_current_a = _to_signed16(bat[2]) / 10.0          # 31021
+            battery_power_w   = _to_signed16(bat[3])                 # 31022
+            battery_temp_c    = _to_signed16(bat[4]) / 10.0          # 31023
+            battery_soc       = bat[5]                               # 31024
+            bms_max_charge_a  = bat[6] / 10.0                        # 31025
+            bms_max_discharge_a = bat[7] / 10.0                      # 31026
+            # bat[8] = inverter state (31027), bat[9] = reserved (31028)
+            bms_connect_state = bat[10]                               # 31029
 
             if bms_connect_state not in _BMS_VALID_STATES:
                 logger.warning(
@@ -214,7 +219,7 @@ class FoxESSModbusClient:
             # Batch B: 31002–31005 — PV1+PV2 power (and voltage/current, ignored)
             pv = self._read_holding_registers(KHRegisters.PV1_POWER, 4)
             pv1_power_w = _to_signed16(pv[0]) if pv else 0   # 31002
-            pv2_power_w = _to_signed16(pv[2]) if pv else 0   # 31005 offset 3 from 31002
+            pv2_power_w = _to_signed16(pv[3]) if pv else 0   # 31005 offset 3 from 31002
 
             # Batch C: 31049–31054 — grid CT (32-bit) + load
             grid_regs = self._read_holding_registers(KHRegisters.GRID_CT_POWER_H, 6)
@@ -249,6 +254,7 @@ class FoxESSModbusClient:
                 grid_power_w=grid_power_w,
                 load_power_w=load_power_w,
                 battery_temp_c=battery_temp_c,
+                inverter_internal_temp_c=inverter_internal_temp_c,
                 work_mode=work_mode,
                 min_soc_pct=min_soc,
                 bms_max_charge_w=bms_max_charge_w,

@@ -1,4 +1,5 @@
 import logging
+import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -52,9 +53,11 @@ class ConsumptionForecaster:
         # Compute P75 for each bucket (conservative)
         self._profile = {}
         for key, values in buckets.items():
-            values.sort()
-            p75_idx = int(len(values) * 0.75)
-            self._profile[key] = values[min(p75_idx, len(values) - 1)]
+            if len(values) >= 4:
+                self._profile[key] = statistics.quantiles(values, n=4)[2]
+            else:
+                values.sort()
+                self._profile[key] = values[-1]  # max for tiny samples
 
         logger.info("Built consumption profile from %d records (%d buckets)",
                      len(history), len(self._profile))
@@ -82,6 +85,10 @@ class ConsumptionForecaster:
             })
 
         return results
+
+    def predict_slot(self, ts: datetime) -> float:
+        """Public interface to get predicted load (kW) for a given timestamp."""
+        return self._predict_slot(ts)
 
     def _predict_slot(self, ts: datetime) -> float:
         """Predict load for a specific time slot."""

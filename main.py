@@ -11,14 +11,18 @@ Runs every 5 minutes:
 """
 
 import collections
+import hmac
 import http.server
 import json
 import logging
 import os
+import socket
 import signal
 import sys
 import time
 import threading
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -71,7 +75,7 @@ STATUS_PATH = Path(__file__).parent / "web" / "dashboard_status.json"
 class PowerArbSystem:
     def __init__(self):
         self.db = Database()
-        self.amber = AmberClient(self.db)
+        self.amber: AmberClient | None = None
         self.dampener = PriceDampener(self.db)
         self.flowpower: FlowPowerClient | None = None
         self.foxess = FoxESSModbusClient()
@@ -105,6 +109,31 @@ class PowerArbSystem:
         self._using_custom = False
         self._restart_requested = False
         self._remote_control_active = False  # tracks whether 44000=1 is currently set
+
+    @staticmethod
+    def _internet_available(timeout_s: float = 1.5) -> bool:
+        """Quick connectivity check for internet-based API calls."""
+        for host, port in (("1.1.1.1", 53), ("8.8.8.8", 53)):
+            try:
+                with socket.create_connection((host, port), timeout=timeout_s):
+                    return True
+            except OSError:
+                continue
+
+        # Fallback for networks where DNS egress checks fail but HTTPS works.
+        probe_timeout = max(2.0, timeout_s)
+        for url in ("https://api.open-meteo.com", "https://api.solcast.com.au"):
+            try:
+                req = urllib.request.Request(url, method="HEAD")
+                with urllib.request.urlopen(req, timeout=probe_timeout):
+                    return True
+            except Exception:
+                try:
+                    with urllib.request.urlopen(url, timeout=probe_timeout):
+                        return True
+                except Exception:
+                    continue
+        return False
 
     def run_cycle(self):
         """Execute one optimization cycle."""
@@ -149,6 +178,7 @@ class PowerArbSystem:
                     "pv_power_w": state.pv_power_w,
                     "load_power_w": state.load_power_w,
                     "battery_temp_c": state.battery_temp_c,
+                    "inverter_internal_temp_c": state.inverter_internal_temp_c,
                 })
 
                 # Log consumption for forecaster training
@@ -156,12 +186,20 @@ class PowerArbSystem:
                     cycle_start.isoformat(), state.load_power_w, "measured"
                 )
 
-            # 1b. Poll occupancy and AC state (if HA configured)
-            occupancy = self.ha.poll_occupancy()
-            ac_running = self.ha.poll_ac_state()
+            internet_ok = self._internet_available()
+            if not internet_ok:
+                logger.warning("Internet check failed; skipping API calls this cycle")
 
-            # 1c. Refresh weather forecast if due
-            self.weather.get_forecast()
+            # 1b. Poll occupancy and AC state (if HA configured)
+            if internet_ok:
+                occupancy = self.ha.poll_occupancy()
+                ac_running = self.ha.poll_ac_state()
+            else:
+                occupancy = True
+                ac_running = False
+
+            # 1c. Refresh weather forecast/cache
+            self.weather.get_forecast(allow_fetch=internet_ok)
             horizon_hours = max(6, min(48, int(config.system.optimizer_horizon_hours)))
             horizon_periods = horizon_hours * PERIODS_PER_HOUR
 
@@ -179,22 +217,82 @@ class PowerArbSystem:
                 dampened_import = None
                 dampened_export = None
             elif retailer_mode == "flowpower":
-                if self.flowpower is None:
-                    self.flowpower = FlowPowerClient(self.db)
-                prices = self.flowpower.fetch_current_and_forecast()
-                import_prices_raw = prices["import"]
-                export_prices_raw = prices["export"]
-                dampened_import = None
-                dampened_export = None
-            else:
-                prices = self.amber.fetch_current_and_forecast()
-                import_prices_raw = prices["import"]
-                export_prices_raw = prices["export"]
-                dampened_import = None
-                dampened_export = None
+                if not internet_ok:
+                    logger.error("Internet unavailable; cannot fetch Flow Power pricing")
+                    self._handle_failure()
+                    return
+                if not config.flowpower.api_key:
+                    logger.error("FLOWPOWER_API_KEY is missing; cannot fetch Flow Power pricing")
+                    self._errors.append(f"{datetime.now().isoformat()}: flowpower api key missing")
+                    self._handle_failure()
+                    return
+                try:
+                    if self.flowpower is None:
+                        self.flowpower = FlowPowerClient(self.db)
+                except Exception as e:
+                    logger.error("Failed to initialize Flow Power client: %s", e)
+                    self._errors.append(f"{datetime.now().isoformat()}: flowpower init failed: {e}")
+                    self._handle_failure()
+                    return
 
-            if not import_prices_raw:
+                try:
+                    prices = self.flowpower.fetch_current_and_forecast()
+                except Exception as e:
+                    logger.error("Flow Power price fetch failed: %s", e)
+                    self._errors.append(f"{datetime.now().isoformat()}: flowpower fetch failed: {e}")
+                    self._handle_failure()
+                    return
+
+                import_prices_raw = prices["import"]
+                export_prices_raw = prices["export"]
+                dampened_import = None
+                dampened_export = None
+            elif retailer_mode == "amber":
+                if not internet_ok:
+                    logger.error("Internet unavailable; cannot fetch Amber pricing")
+                    self._handle_failure()
+                    return
+                if not config.amber.api_key:
+                    logger.error("AMBER_API_KEY is missing; cannot fetch Amber pricing")
+                    self._errors.append(f"{datetime.now().isoformat()}: amber api key missing")
+                    self._handle_failure()
+                    return
+                try:
+                    if self.amber is None:
+                        self.amber = AmberClient(self.db)
+                except Exception as e:
+                    logger.error("Failed to initialize Amber client: %s", e)
+                    self._errors.append(f"{datetime.now().isoformat()}: amber init failed: {e}")
+                    self._handle_failure()
+                    return
+
+                try:
+                    prices = self.amber.fetch_current_and_forecast()
+                except Exception as e:
+                    logger.error("Amber price fetch failed: %s", e)
+                    self._errors.append(f"{datetime.now().isoformat()}: amber fetch failed: {e}")
+                    self._handle_failure()
+                    return
+
+                import_prices_raw = prices["import"]
+                export_prices_raw = prices["export"]
+                dampened_import = None
+                dampened_export = None
+            elif retailer_mode == "custom":
+                logger.error("RETAILER=custom but CUSTOM_PRICING_CSV is not set")
+                self._errors.append(f"{datetime.now().isoformat()}: custom pricing csv missing")
+                self._handle_failure()
+                return
+            else:
+                logger.error("Invalid RETAILER value: %s", retailer_mode)
+                self._errors.append(f"{datetime.now().isoformat()}: invalid retailer '{retailer_mode}'")
+                self._handle_failure()
+                return
+
+            if not import_prices_raw or not export_prices_raw:
                 logger.error("No price data; skipping cycle")
+                self._errors.append(f"{datetime.now().isoformat()}: no price data")
+                self._handle_failure()
                 return
 
             # 3. Dampen forecast prices (shared ML path for Amber + Flow Power).
@@ -210,13 +308,15 @@ class PowerArbSystem:
                     self.ml_price.snapshot_features(import_prices_raw, cycle_start)
 
             # 4. Get solar forecast
-            solar_fc = self.solar_forecaster.forecast(hours=horizon_hours, start=cycle_start)
+            solar_fc = self.solar_forecaster.forecast(
+                hours=horizon_hours, start=cycle_start, allow_api_fetch=internet_ok
+            )
 
             # 5. Predict consumption
             # Get recent loads for ML features
             recent_history = self.db.get_consumption_history(days=1)
             recent_loads_kw = [r["load_watts"] / 1000.0 for r in recent_history[-36:]]
-            profile_kw = self.consumption._predict_slot(cycle_start)
+            profile_kw = self.consumption.predict_slot(cycle_start)
 
             # Snapshot consumption features for ML training
             if config.ml.enabled:
@@ -309,12 +409,19 @@ class PowerArbSystem:
             else:
                 min_soc = int(config.battery.min_soc_pct)
 
-            # Only write to inverter if action changed
+            # Write to inverter when action changes, or refresh remote-control actions each cycle.
             mode_changed = False
-            if action != self._last_action:
-                logger.info("Action changed: %s -> %s",
-                            self._last_action.name if self._last_action else "None",
-                            action.name)
+            prev_action = self._last_action
+            should_apply = (action != prev_action) or (action in _REMOTE_CONTROL_ACTIONS)
+            if should_apply:
+                if action != prev_action:
+                    logger.info(
+                        "Action changed: %s -> %s",
+                        prev_action.name if prev_action else "None",
+                        action.name,
+                    )
+                elif action in _REMOTE_CONTROL_ACTIONS:
+                    logger.debug("Refreshing remote-control watchdog for %s", action.name)
 
                 if action in _REMOTE_CONTROL_ACTIONS:
                     # GRID_CHARGE / GRID_CHARGE_NO_EXPORT / DISCHARGE_GRID:
@@ -333,14 +440,15 @@ class PowerArbSystem:
                     # SELF_USE / SELF_USE_NO_EXPORT / HOLD:
                     # disable remote control first, then set work mode
                     if self._remote_control_active:
-                        self.foxess.disable_remote_control()
+                        if not self.foxess.disable_remote_control():
+                            logger.warning("Failed to disable remote control before mode change")
                         self._remote_control_active = False
                     success = self.foxess.set_work_mode(work_mode)
 
                 if success:
                     self.foxess.set_min_soc(min_soc)
                     self._last_action = action
-                    mode_changed = True
+                    mode_changed = action != prev_action
                 else:
                     logger.error("Failed to apply action %s; keeping previous", action.name)
 
@@ -407,6 +515,240 @@ class PowerArbSystem:
             self._errors.append(f"{datetime.now().isoformat()}: {e}")
             self._handle_failure()
 
+    def _build_dashboard_dict(
+        self, cycle_start,
+        import_prices_raw, export_prices_raw,
+        dampened_import, dampened_export,
+        solar_fc,
+        import_cents, export_cents, solar_kw, load_kw,
+        timestamps, n_periods, horizon_hours,
+        *, live_data=None, optimizer_data=None,
+    ):
+        """Build the dashboard status dict.
+
+        Args:
+            live_data: dict with inverter live readings, or None if offline.
+            optimizer_data: dict with result/action/optimizer_action, or None if offline.
+        """
+        # Solcast health info
+        solcast_last = self.solcast_client.last_fetch_time
+        current_hour = cycle_start.hour
+        next_solcast = next(
+            (h for h in FETCH_HOURS_AEST if h > current_hour),
+            FETCH_HOURS_AEST[0],
+        )
+        solcast_calls_today = sum(1 for h in FETCH_HOURS_AEST if h <= current_hour)
+
+        # Solar P10/P90 arrays
+        solar_p10 = [solar_fc[i].get("solar_p10_kw", 0.0) for i in range(n_periods)]
+        solar_p90 = [solar_fc[i].get("solar_p90_kw", 0.0) for i in range(n_periods)]
+
+        # History: last 48h battery log + decisions
+        since_48h = (cycle_start - timedelta(hours=48)).isoformat()
+        history = self.db.get_battery_log_since(since_48h)
+        decisions = self.db.get_decisions_since(since_48h)
+        decision_map = {d["timestamp"]: d for d in decisions}
+
+        # Financial
+        today_savings = self._today_baseline_c - (
+            self._today_import_cost_c
+            - self._today_export_revenue_c
+            + self._today_degradation_c
+        )
+        capacity = config.battery.capacity_kwh
+        cycles_today = (
+            self._today_energy_cycled_kwh / (2 * capacity)
+            if capacity > 0 else 0
+        )
+
+        # Live section: from inverter state or offline defaults
+        if live_data:
+            state = live_data["state"]
+            action = live_data["action"]
+            optimizer_action = live_data["optimizer_action"]
+            result = live_data["result"]
+            live = {
+                "pv_power_kw": round(state.pv_power_w / 1000, 2),
+                "load_power_kw": round(state.load_power_w / 1000, 2),
+                "grid_power_kw": round(state.grid_power_w / 1000, 2),
+                "battery_power_kw": round(state.battery_power_w / 1000, 2),
+                "soc_pct": round(state.soc_pct, 1),
+                "soc_kwh": round(state.soc_kwh, 1),
+                "battery_temp_c": round(state.battery_temp_c, 1),
+                "inverter_internal_temp_c": round(state.inverter_internal_temp_c, 1),
+                "min_soc_pct": state.min_soc_pct,
+                "import_price_c": round(import_prices_raw[0].per_kwh, 1) if import_prices_raw else 0,
+                "export_price_c": round(export_prices_raw[0].per_kwh, 1) if export_prices_raw else 0,
+                "dampened_import_c": round(import_cents[0], 1),
+                "dampened_export_c": round(export_cents[0], 1),
+                "spike_status": import_prices_raw[0].spike_status if import_prices_raw else "none",
+                "action": action.name,
+                "optimizer_action": optimizer_action.name,
+                "reason": result.reason,
+                "work_mode": state.work_mode.name,
+                "remote_control_active": self._remote_control_active,
+                "override": self._manual_override or "AUTO",
+                "override_expires": self._override_expires.isoformat() if self._override_expires else None,
+                "bms_max_charge_kw": round(state.bms_max_charge_w / 1000, 2),
+                "bms_max_discharge_kw": round(state.bms_max_discharge_w / 1000, 2),
+            }
+            foxess_status = "ok"
+            foxess_last_read = cycle_start.isoformat()
+            horizon_profit = round(result.expected_profit_cents, 1)
+            schedule_action = [a.name for _, a, _ in result.schedule]
+            schedule_profit = [round(p, 2) for _, _, p in result.schedule]
+            soc_trajectory = [round(s, 1) for s in result.soc_trajectory]
+        else:
+            live_import = import_prices_raw[0].per_kwh if import_prices_raw else 0.0
+            live_export = export_prices_raw[0].per_kwh if export_prices_raw else 0.0
+            live = {
+                "pv_power_kw": 0.0,
+                "load_power_kw": 0.0,
+                "grid_power_kw": 0.0,
+                "battery_power_kw": 0.0,
+                "soc_pct": 0.0,
+                "soc_kwh": 0.0,
+                "battery_temp_c": 0.0,
+                "inverter_internal_temp_c": 0.0,
+                "min_soc_pct": config.battery.min_soc_pct,
+                "import_price_c": round(live_import, 1),
+                "export_price_c": round(live_export, 1),
+                "dampened_import_c": round(import_cents[0], 1) if import_cents else 0.0,
+                "dampened_export_c": round(export_cents[0], 1) if export_cents else 0.0,
+                "spike_status": import_prices_raw[0].spike_status if import_prices_raw else "none",
+                "action": "HOLD",
+                "optimizer_action": None,
+                "reason": "Inverter offline: data ingest active, control skipped",
+                "work_mode": "OFFLINE",
+                "remote_control_active": False,
+                "override": self._manual_override or "AUTO",
+                "override_expires": self._override_expires.isoformat() if self._override_expires else None,
+                "bms_max_charge_kw": 0.0,
+                "bms_max_discharge_kw": 0.0,
+            }
+            foxess_status = "offline"
+            foxess_last_read = None
+            horizon_profit = 0.0
+            schedule_action = []
+            schedule_profit = []
+            soc_trajectory = []
+
+        pricing_provider = str(config.retailer.retailer or "").strip().lower()
+        if pricing_provider == "flowpower":
+            pricing_source_label = "FlowPower"
+        elif pricing_provider == "amber":
+            pricing_source_label = "Amber"
+        elif pricing_provider == "custom":
+            csv_name = Path(str(config.retailer.custom_pricing_csv or "").strip()).stem
+            pricing_source_label = csv_name or "Custom CSV"
+        else:
+            pricing_source_label = pricing_provider.upper() if pricing_provider else "Unknown"
+
+        return {
+            "updated_at": cycle_start.isoformat(),
+            "cycle_ms": self._cycle_ms,
+            "live": live,
+
+            "forecast": {
+                "timestamps": timestamps,
+                "raw_import_price_c": [
+                    round(dampened_import[i].per_kwh if self._using_custom else dampened_import[i].raw_per_kwh, 1)
+                    for i in range(n_periods)
+                ],
+                "raw_export_price_c": [
+                    round(dampened_export[i].per_kwh if self._using_custom else dampened_export[i].raw_per_kwh, 1)
+                    for i in range(n_periods)
+                ],
+                "import_price_c": [round(v, 1) for v in import_cents],
+                "export_price_c": [round(v, 1) for v in export_cents],
+                "solar_kw": [round(v, 2) for v in solar_kw],
+                "solar_p10_kw": [round(v, 2) for v in solar_p10],
+                "solar_p90_kw": [round(v, 2) for v in solar_p90],
+                "load_kw": [round(v, 2) for v in load_kw],
+                "schedule_action": schedule_action,
+                "schedule_profit_c": schedule_profit,
+                "soc_trajectory_kwh": soc_trajectory,
+            },
+
+            "financial": {
+                "today_import_cost_c": round(self._today_import_cost_c, 1),
+                "today_export_revenue_c": round(self._today_export_revenue_c, 1),
+                "today_degradation_cost_c": round(self._today_degradation_c, 1),
+                "today_savings_c": round(today_savings, 1),
+                "horizon_profit_c": horizon_profit,
+            },
+
+            "battery_health": {
+                "cycles_today": round(cycles_today, 2),
+                "capacity_kwh": config.battery.capacity_kwh,
+                "min_soc_kwh": config.battery.min_soc_kwh,
+                "max_power_kw": config.battery.max_power_kw,
+                "cycle_life": config.battery.cycle_life,
+            },
+
+            "system_health": {
+                "pricing_provider": config.retailer.retailer,
+                "pricing_source_label": pricing_source_label,
+                "pricing_last_fetch": cycle_start.isoformat(),
+                "pricing_status": "ok" if n_periods > 0 else "no_data",
+                "pricing_intervals": n_periods,
+                # Backward-compatible aliases used by current dashboard UI.
+                "amber_last_fetch": cycle_start.isoformat(),
+                "amber_status": "ok" if n_periods > 0 else "no_data",
+                "amber_prices_count": n_periods,
+                "solcast_last_fetch": solcast_last.isoformat() if solcast_last else None,
+                "solcast_status": "ok" if solcast_last else "no_data",
+                "solcast_calls_today": solcast_calls_today,
+                "solcast_next_scheduled_hour": next_solcast,
+                "foxess_status": foxess_status,
+                "foxess_last_read": foxess_last_read,
+                "optimizer_last_run": cycle_start.isoformat(),
+                "optimizer_execution_ms": self._cycle_ms,
+                "optimizer_horizon_hours": horizon_hours,
+                "consecutive_failures": self._consecutive_failures,
+                "errors": list(self._errors),
+                "ml_price_model": "active" if self.ml_price.model_trained else "fallback",
+                "ml_consumption_model": "active" if self.ml_consumption.model_trained else "fallback",
+                "ha_enabled": config.homeassistant.enabled,
+                "weather_last_fetch": self.weather.last_fetch_time.isoformat() if self.weather.last_fetch_time else None,
+            },
+
+            "history": {
+                "timestamps": [r["timestamp"] for r in history],
+                "soc_kwh": [round(r["soc_kwh"], 1) for r in history],
+                "pv_power_kw": [round(r["pv_power_w"] / 1000, 2) for r in history],
+                "load_power_kw": [round(r["load_power_w"] / 1000, 2) for r in history],
+                "grid_power_kw": [round(r["grid_power_w"] / 1000, 2) for r in history],
+                "battery_power_kw": [round(r["battery_power_w"] / 1000, 2) for r in history],
+                "battery_temp_c": [
+                    round(r["battery_temp_c"], 1) if r["battery_temp_c"] is not None else None
+                    for r in history
+                ],
+                "inverter_internal_temp_c": [
+                    round(r.get("inverter_internal_temp_c"), 1) if r.get("inverter_internal_temp_c") is not None else None
+                    for r in history
+                ],
+                "import_price_c": [
+                    round(decision_map[r["timestamp"]]["import_price"], 1)
+                    if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["import_price"] is not None
+                    else None
+                    for r in history
+                ],
+                "export_price_c": [
+                    round(decision_map[r["timestamp"]]["export_price"], 1)
+                    if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["export_price"] is not None
+                    else None
+                    for r in history
+                ],
+                "action": [
+                    decision_map[r["timestamp"]]["action"].upper()
+                    if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["action"]
+                    else None
+                    for r in history
+                ],
+            },
+        }
+
     def _write_dashboard_status(
         self, cycle_start, state, result, action, optimizer_action,
         import_prices_raw, export_prices_raw,
@@ -417,169 +759,23 @@ class PowerArbSystem:
     ):
         """Write dashboard_status.json atomically for the monitoring dashboard."""
         try:
-            # Solcast health info
-            solcast_last = self.solcast_client._last_fetch_time
-            current_hour = cycle_start.hour
-            next_solcast = next(
-                (h for h in FETCH_HOURS_AEST if h > current_hour),
-                FETCH_HOURS_AEST[0],  # wrap to tomorrow
+            status = self._build_dashboard_dict(
+                cycle_start,
+                import_prices_raw, export_prices_raw,
+                dampened_import, dampened_export,
+                solar_fc,
+                import_cents, export_cents, solar_kw, load_kw,
+                timestamps, n_periods, horizon_hours,
+                live_data={
+                    "state": state, "result": result,
+                    "action": action, "optimizer_action": optimizer_action,
+                },
             )
-            solcast_calls_today = sum(
-                1 for h in FETCH_HOURS_AEST if h <= current_hour
-            )
-
-            # Solar P10/P90 arrays
-            solar_p10 = [solar_fc[i].get("solar_p10_kw", 0.0) for i in range(n_periods)]
-            solar_p90 = [solar_fc[i].get("solar_p90_kw", 0.0) for i in range(n_periods)]
-
-            # History: last 48h of battery log + decisions (for prices)
-            since_48h = (cycle_start - timedelta(hours=48)).isoformat()
-            history = self.db.get_battery_log_since(since_48h)
-            decisions = self.db.get_decisions_since(since_48h)
-
-            # Build a price lookup from decisions (keyed by timestamp)
-            decision_map = {d["timestamp"]: d for d in decisions}
-
-            # Financial
-            today_savings = self._today_baseline_c - (
-                self._today_import_cost_c
-                - self._today_export_revenue_c
-                + self._today_degradation_c
-            )
-
-            # Cycles today
-            capacity = config.battery.capacity_kwh
-            cycles_today = (
-                self._today_energy_cycled_kwh / (2 * capacity)
-                if capacity > 0 else 0
-            )
-
-            status = {
-                "updated_at": cycle_start.isoformat(),
-                "cycle_ms": self._cycle_ms,
-
-                "live": {
-                    "pv_power_kw": round(state.pv_power_w / 1000, 2),
-                    "load_power_kw": round(state.load_power_w / 1000, 2),
-                    "grid_power_kw": round(state.grid_power_w / 1000, 2),
-                    "battery_power_kw": round(state.battery_power_w / 1000, 2),
-                    "soc_pct": round(state.soc_pct, 1),
-                    "soc_kwh": round(state.soc_kwh, 1),
-                    "battery_temp_c": round(state.battery_temp_c, 1),
-                    "min_soc_pct": state.min_soc_pct,
-                    "import_price_c": round(import_prices_raw[0].per_kwh, 1) if import_prices_raw else 0,
-                    "export_price_c": round(export_prices_raw[0].per_kwh, 1) if export_prices_raw else 0,
-                    "dampened_import_c": round(import_cents[0], 1),
-                    "dampened_export_c": round(export_cents[0], 1),
-                    "spike_status": import_prices_raw[0].spike_status if import_prices_raw else "none",
-                    "action": action.name,
-                    "optimizer_action": optimizer_action.name,
-                    "reason": result.reason,
-                    "work_mode": state.work_mode.name,
-                    "remote_control_active": self._remote_control_active,
-                    "override": self._manual_override or "AUTO",
-                    "override_expires": self._override_expires.isoformat() if self._override_expires else None,
-                    "bms_max_charge_kw": round(state.bms_max_charge_w / 1000, 2),
-                    "bms_max_discharge_kw": round(state.bms_max_discharge_w / 1000, 2),
-                },
-
-                "forecast": {
-                    "timestamps": timestamps,
-                    "raw_import_price_c": [
-                        round(dampened_import[i].per_kwh if self._using_custom else dampened_import[i].raw_per_kwh, 1)
-                        for i in range(n_periods)
-                    ],
-                    "raw_export_price_c": [
-                        round(dampened_export[i].per_kwh if self._using_custom else dampened_export[i].raw_per_kwh, 1)
-                        for i in range(n_periods)
-                    ],
-                    "import_price_c": [round(v, 1) for v in import_cents],
-                    "export_price_c": [round(v, 1) for v in export_cents],
-                    "solar_kw": [round(v, 2) for v in solar_kw],
-                    "solar_p10_kw": [round(v, 2) for v in solar_p10],
-                    "solar_p90_kw": [round(v, 2) for v in solar_p90],
-                    "load_kw": [round(v, 2) for v in load_kw],
-                    "schedule_action": [a.name for _, a, _ in result.schedule],
-                    "schedule_profit_c": [round(p, 2) for _, _, p in result.schedule],
-                    "soc_trajectory_kwh": [round(s, 1) for s in result.soc_trajectory],
-                },
-
-                "financial": {
-                    "today_import_cost_c": round(self._today_import_cost_c, 1),
-                    "today_export_revenue_c": round(self._today_export_revenue_c, 1),
-                    "today_degradation_cost_c": round(self._today_degradation_c, 1),
-                    "today_savings_c": round(today_savings, 1),
-                    "horizon_profit_c": round(result.expected_profit_cents, 1),
-                },
-
-                "battery_health": {
-                    "cycles_today": round(cycles_today, 2),
-                    "capacity_kwh": config.battery.capacity_kwh,
-                    "min_soc_kwh": config.battery.min_soc_kwh,
-                    "max_power_kw": config.battery.max_power_kw,
-                    "cycle_life": config.battery.cycle_life,
-                },
-
-                "system_health": {
-                    "amber_last_fetch": cycle_start.isoformat(),
-                    "amber_status": "ok",
-                    "amber_prices_count": n_periods,
-                    "solcast_last_fetch": solcast_last.isoformat() if solcast_last else None,
-                    "solcast_status": "ok" if solcast_last else "no_data",
-                    "solcast_calls_today": solcast_calls_today,
-                    "solcast_next_scheduled_hour": next_solcast,
-                    "foxess_status": "ok",
-                    "foxess_last_read": cycle_start.isoformat(),
-                    "optimizer_last_run": cycle_start.isoformat(),
-                    "optimizer_execution_ms": self._cycle_ms,
-                    "optimizer_horizon_hours": horizon_hours,
-                    "consecutive_failures": self._consecutive_failures,
-                    "errors": list(self._errors),
-                    "ml_price_model": "active" if self.ml_price._model_trained else "fallback",
-                    "ml_consumption_model": "active" if self.ml_consumption._model_trained else "fallback",
-                    "ha_enabled": config.homeassistant.enabled,
-                    "weather_last_fetch": self.weather._last_fetch_time.isoformat() if self.weather._last_fetch_time else None,
-                },
-
-                "history": {
-                    "timestamps": [r["timestamp"] for r in history],
-                    "soc_kwh": [round(r["soc_kwh"], 1) for r in history],
-                    "pv_power_kw": [round(r["pv_power_w"] / 1000, 2) for r in history],
-                    "load_power_kw": [round(r["load_power_w"] / 1000, 2) for r in history],
-                    "grid_power_kw": [round(r["grid_power_w"] / 1000, 2) for r in history],
-                    "battery_power_kw": [round(r["battery_power_w"] / 1000, 2) for r in history],
-                    "battery_temp_c": [
-                        round(r["battery_temp_c"], 1) if r["battery_temp_c"] is not None else None
-                        for r in history
-                    ],
-                    "import_price_c": [
-                        round(decision_map[r["timestamp"]]["import_price"], 1)
-                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["import_price"] is not None
-                        else None
-                        for r in history
-                    ],
-                    "export_price_c": [
-                        round(decision_map[r["timestamp"]]["export_price"], 1)
-                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["export_price"] is not None
-                        else None
-                        for r in history
-                    ],
-                    "action": [
-                        decision_map[r["timestamp"]]["action"].upper()
-                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["action"]
-                        else None
-                        for r in history
-                    ],
-                },
-            }
-
-            # Atomic write
             tmp_path = STATUS_PATH.with_suffix(".json.tmp")
             with open(tmp_path, "w") as f:
                 json.dump(status, f)
             os.replace(str(tmp_path), str(STATUS_PATH))
             logger.debug("Dashboard status written to %s", STATUS_PATH)
-
         except Exception as e:
             logger.warning("Failed to write dashboard status: %s", e)
 
@@ -593,167 +789,20 @@ class PowerArbSystem:
     ):
         """Write dashboard_status.json for data-only cycles (inverter offline)."""
         try:
-            # Solcast health info
-            solcast_last = self.solcast_client._last_fetch_time
-            current_hour = cycle_start.hour
-            next_solcast = next(
-                (h for h in FETCH_HOURS_AEST if h > current_hour),
-                FETCH_HOURS_AEST[0],
+            status = self._build_dashboard_dict(
+                cycle_start,
+                import_prices_raw, export_prices_raw,
+                dampened_import, dampened_export,
+                solar_fc,
+                import_cents, export_cents, solar_kw, load_kw,
+                timestamps, n_periods, horizon_hours,
+                live_data=None,
             )
-            solcast_calls_today = sum(1 for h in FETCH_HOURS_AEST if h <= current_hour)
-
-            # Solar P10/P90 arrays
-            solar_p10 = [solar_fc[i].get("solar_p10_kw", 0.0) for i in range(n_periods)]
-            solar_p90 = [solar_fc[i].get("solar_p90_kw", 0.0) for i in range(n_periods)]
-
-            # History: last 48h battery log + decisions
-            since_48h = (cycle_start - timedelta(hours=48)).isoformat()
-            history = self.db.get_battery_log_since(since_48h)
-            decisions = self.db.get_decisions_since(since_48h)
-            decision_map = {d["timestamp"]: d for d in decisions}
-
-            # Financial (no control action executed this cycle)
-            today_savings = self._today_baseline_c - (
-                self._today_import_cost_c
-                - self._today_export_revenue_c
-                + self._today_degradation_c
-            )
-            capacity = config.battery.capacity_kwh
-            cycles_today = (
-                self._today_energy_cycled_kwh / (2 * capacity)
-                if capacity > 0 else 0
-            )
-
-            live_import = import_prices_raw[0].per_kwh if import_prices_raw else 0.0
-            live_export = export_prices_raw[0].per_kwh if export_prices_raw else 0.0
-            live_dampened_import = import_cents[0] if import_cents else 0.0
-            live_dampened_export = export_cents[0] if export_cents else 0.0
-
-            status = {
-                "updated_at": cycle_start.isoformat(),
-                "cycle_ms": self._cycle_ms,
-
-                "live": {
-                    "pv_power_kw": 0.0,
-                    "load_power_kw": 0.0,
-                    "grid_power_kw": 0.0,
-                    "battery_power_kw": 0.0,
-                    "soc_pct": 0.0,
-                    "soc_kwh": 0.0,
-                    "battery_temp_c": 0.0,
-                    "min_soc_pct": config.battery.min_soc_pct,
-                    "import_price_c": round(live_import, 1),
-                    "export_price_c": round(live_export, 1),
-                    "dampened_import_c": round(live_dampened_import, 1),
-                    "dampened_export_c": round(live_dampened_export, 1),
-                    "spike_status": import_prices_raw[0].spike_status if import_prices_raw else "none",
-                    "action": "HOLD",
-                    "optimizer_action": None,
-                    "reason": "Inverter offline: data ingest active, control skipped",
-                    "work_mode": "OFFLINE",
-                    "remote_control_active": False,
-                    "override": self._manual_override or "AUTO",
-                    "override_expires": self._override_expires.isoformat() if self._override_expires else None,
-                    "bms_max_charge_kw": 0.0,
-                    "bms_max_discharge_kw": 0.0,
-                },
-
-                "forecast": {
-                    "timestamps": timestamps,
-                    "raw_import_price_c": [
-                        round(dampened_import[i].per_kwh if self._using_custom else dampened_import[i].raw_per_kwh, 1)
-                        for i in range(n_periods)
-                    ],
-                    "raw_export_price_c": [
-                        round(dampened_export[i].per_kwh if self._using_custom else dampened_export[i].raw_per_kwh, 1)
-                        for i in range(n_periods)
-                    ],
-                    "import_price_c": [round(v, 1) for v in import_cents],
-                    "export_price_c": [round(v, 1) for v in export_cents],
-                    "solar_kw": [round(v, 2) for v in solar_kw],
-                    "solar_p10_kw": [round(v, 2) for v in solar_p10],
-                    "solar_p90_kw": [round(v, 2) for v in solar_p90],
-                    "load_kw": [round(v, 2) for v in load_kw],
-                    "schedule_action": [],
-                    "schedule_profit_c": [],
-                    "soc_trajectory_kwh": [],
-                },
-
-                "financial": {
-                    "today_import_cost_c": round(self._today_import_cost_c, 1),
-                    "today_export_revenue_c": round(self._today_export_revenue_c, 1),
-                    "today_degradation_cost_c": round(self._today_degradation_c, 1),
-                    "today_savings_c": round(today_savings, 1),
-                    "horizon_profit_c": 0.0,
-                },
-
-                "battery_health": {
-                    "cycles_today": round(cycles_today, 2),
-                    "capacity_kwh": config.battery.capacity_kwh,
-                    "min_soc_kwh": config.battery.min_soc_kwh,
-                    "max_power_kw": config.battery.max_power_kw,
-                    "cycle_life": config.battery.cycle_life,
-                },
-
-                "system_health": {
-                    "amber_last_fetch": cycle_start.isoformat(),
-                    "amber_status": "ok",
-                    "amber_prices_count": n_periods,
-                    "solcast_last_fetch": solcast_last.isoformat() if solcast_last else None,
-                    "solcast_status": "ok" if solcast_last else "no_data",
-                    "solcast_calls_today": solcast_calls_today,
-                    "solcast_next_scheduled_hour": next_solcast,
-                    "foxess_status": "offline",
-                    "foxess_last_read": None,
-                    "optimizer_last_run": cycle_start.isoformat(),
-                    "optimizer_execution_ms": self._cycle_ms,
-                    "optimizer_horizon_hours": horizon_hours,
-                    "consecutive_failures": self._consecutive_failures,
-                    "errors": list(self._errors),
-                    "ml_price_model": "active" if self.ml_price._model_trained else "fallback",
-                    "ml_consumption_model": "active" if self.ml_consumption._model_trained else "fallback",
-                    "ha_enabled": config.homeassistant.enabled,
-                    "weather_last_fetch": self.weather._last_fetch_time.isoformat() if self.weather._last_fetch_time else None,
-                },
-
-                "history": {
-                    "timestamps": [r["timestamp"] for r in history],
-                    "soc_kwh": [round(r["soc_kwh"], 1) for r in history],
-                    "pv_power_kw": [round(r["pv_power_w"] / 1000, 2) for r in history],
-                    "load_power_kw": [round(r["load_power_w"] / 1000, 2) for r in history],
-                    "grid_power_kw": [round(r["grid_power_w"] / 1000, 2) for r in history],
-                    "battery_power_kw": [round(r["battery_power_w"] / 1000, 2) for r in history],
-                    "battery_temp_c": [
-                        round(r["battery_temp_c"], 1) if r["battery_temp_c"] is not None else None
-                        for r in history
-                    ],
-                    "import_price_c": [
-                        round(decision_map[r["timestamp"]]["import_price"], 1)
-                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["import_price"] is not None
-                        else None
-                        for r in history
-                    ],
-                    "export_price_c": [
-                        round(decision_map[r["timestamp"]]["export_price"], 1)
-                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["export_price"] is not None
-                        else None
-                        for r in history
-                    ],
-                    "action": [
-                        decision_map[r["timestamp"]]["action"].upper()
-                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["action"]
-                        else None
-                        for r in history
-                    ],
-                },
-            }
-
             tmp_path = STATUS_PATH.with_suffix(".json.tmp")
             with open(tmp_path, "w") as f:
                 json.dump(status, f)
             os.replace(str(tmp_path), str(STATUS_PATH))
             logger.debug("Dashboard status written (inverter offline) to %s", STATUS_PATH)
-
         except Exception as e:
             logger.warning("Failed to write offline dashboard status: %s", e)
 
@@ -878,8 +927,17 @@ class PowerArbSystem:
         """Start dashboard HTTP server in a background daemon thread."""
         web_dir = str(Path(__file__).parent / "web")
         port = config.system.dashboard_port
+        bind_host = config.system.dashboard_bind_host
+        api_token = config.system.dashboard_api_token.strip()
+        local_hosts = {"127.0.0.1", "::1", "localhost"}
+        if bind_host not in local_hosts and not api_token:
+            logger.error(
+                "Refusing to start dashboard on non-local host '%s' without DASHBOARD_API_TOKEN",
+                bind_host,
+            )
+            return
         system = self  # capture for handler closure
-        project_root = Path(__file__).parent
+        project_root = Path(__file__).parent.resolve()
 
         class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
@@ -888,15 +946,39 @@ class PowerArbSystem:
             def log_message(self, format, *args):
                 pass  # suppress access logs
 
+            def _path_only(self) -> str:
+                return urllib.parse.urlparse(self.path).path
+
+            def _provided_token(self) -> str:
+                header_token = (self.headers.get("X-API-Token") or "").strip()
+                if header_token:
+                    return header_token
+
+                auth_header = (self.headers.get("Authorization") or "").strip()
+                if auth_header.lower().startswith("bearer "):
+                    return auth_header[7:].strip()
+
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                return (query.get("token") or [""])[0].strip()
+
+            def _authorized(self) -> bool:
+                if not api_token:
+                    return True
+                return hmac.compare_digest(self._provided_token(), api_token)
+
             def _send_json(self, data, status=200):
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(json.dumps(data).encode())
 
             def do_POST(self):
-                if self.path == "/api/override":
+                path = self._path_only()
+                if path.startswith("/api/") and not self._authorized():
+                    self._send_json({"ok": False, "error": "Unauthorized"}, 401)
+                    return
+
+                if path == "/api/override":
                     try:
                         length = int(self.headers.get("Content-Length", 0))
                         body = json.loads(self.rfile.read(length)) if length else {}
@@ -907,7 +989,7 @@ class PowerArbSystem:
                     except Exception as e:
                         self._send_json({"ok": False, "error": str(e)}, 400)
 
-                elif self.path == "/api/settings":
+                elif path == "/api/settings":
                     try:
                         length = int(self.headers.get("Content-Length", 0))
                         body = json.loads(self.rfile.read(length)) if length else {}
@@ -918,19 +1000,32 @@ class PowerArbSystem:
                     except Exception as e:
                         self._send_json({"ok": False, "error": str(e)}, 400)
 
-                elif self.path == "/api/settings/upload-pricing":
+                elif path == "/api/settings/upload-pricing":
                     try:
                         length = int(self.headers.get("Content-Length", 0))
                         body = json.loads(self.rfile.read(length)) if length else {}
-                        filename = body.get("filename", "custom_pricing.csv")
+                        raw_filename = str(body.get("filename", "custom_pricing.csv")).strip()
                         content = body.get("content", "")
                         if not content:
                             self._send_json({"ok": False, "error": "No file content"}, 400)
                             return
+                        if not raw_filename:
+                            self._send_json({"ok": False, "error": "Invalid filename"}, 400)
+                            return
+                        if Path(raw_filename).name != raw_filename:
+                            self._send_json({"ok": False, "error": "Filename must not contain path separators"}, 400)
+                            return
+                        filename = Path(raw_filename).name
+                        if not filename.lower().endswith(".csv"):
+                            self._send_json({"ok": False, "error": "Only .csv files are allowed"}, 400)
+                            return
 
                         # Normalize line endings and save to project root
                         content = content.replace("\r\n", "\n").replace("\r", "\n")
-                        dest = project_root / filename
+                        dest = (project_root / filename).resolve()
+                        if project_root not in dest.parents:
+                            self._send_json({"ok": False, "error": "Invalid destination path"}, 400)
+                            return
                         with open(dest, "w", encoding="utf-8", newline="\n") as f:
                             f.write(content)
                         logger.info("Custom pricing CSV saved: %s", dest)
@@ -955,17 +1050,22 @@ class PowerArbSystem:
                     self.send_error(404)
 
             def do_GET(self):
-                if self.path == "/api/override":
+                path = self._path_only()
+                if path.startswith("/api/") and not self._authorized():
+                    self._send_json({"ok": False, "error": "Unauthorized"}, 401)
+                    return
+
+                if path == "/api/override":
                     result = {
                         "override": system._manual_override or "AUTO",
                         "expires": system._override_expires.isoformat() if system._override_expires else None,
                     }
                     self._send_json(result)
 
-                elif self.path == "/api/settings":
+                elif path == "/api/settings":
                     self._send_json(system._read_env_file())
 
-                elif self.path == "/api/settings/pricing-preview":
+                elif path == "/api/settings/pricing-preview":
                     try:
                         env = system._read_env_file()
                         csv_file = env.get("CUSTOM_PRICING_CSV", "")
@@ -982,10 +1082,13 @@ class PowerArbSystem:
                 else:
                     super().do_GET()
 
-        server = http.server.HTTPServer(("", port), DashboardHandler)
+        server = http.server.HTTPServer((bind_host, port), DashboardHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        logger.info("Dashboard server at http://localhost:%d/dashboard.html", port)
+        display_host = "localhost" if bind_host in ("127.0.0.1", "::1", "0.0.0.0", "") else bind_host
+        logger.info("Dashboard server at http://%s:%d/dashboard.html", display_host, port)
+        if api_token:
+            logger.info("Dashboard API token authentication is enabled")
 
     def start(self):
         """Start the scheduler."""
@@ -1034,7 +1137,11 @@ class PowerArbSystem:
         while self._running:
             if self._restart_requested:
                 self._restart()
-            schedule.run_pending()
+            try:
+                schedule.run_pending()
+            except Exception as e:
+                logger.exception("Scheduled task failed: %s", e)
+                self._errors.append(f"{datetime.now().isoformat()}: scheduled task failed: {e}")
             time.sleep(1)
 
     def _restart(self):

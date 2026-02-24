@@ -42,6 +42,11 @@ class MLPriceForecaster:
         self._model_path = self._model_dir / "price_model.joblib"
         self._load_model()
 
+    @property
+    def model_trained(self) -> bool:
+        """Whether the ML model has been trained and is active."""
+        return self._model_trained
+
     def _load_model(self):
         """Load persisted model from disk if available."""
         if self._model_path.exists():
@@ -203,15 +208,12 @@ class MLPriceForecaster:
         """Build full feature dict for a price prediction."""
         features = {}
         features.update(extract_time_features(ts))
-        features.update(extract_daylight_features(
-            ts, config.weather.latitude, config.weather.longitude
-        ))
         weather = self.db.get_weather_at(ts.isoformat())
-        features["temperature_c"] = weather["temperature_c"] if weather else 20.0
-        if weather:
-            features.update(extract_daylight_features(
-                ts, config.weather.latitude, config.weather.longitude,
-                weather.get("sunrise"), weather.get("sunset"),
-            ))
+        features["temperature_c"] = weather.get("temperature_c", 20.0) if weather else 20.0
+        features.update(extract_daylight_features(
+            ts, config.weather.latitude, config.weather.longitude,
+            weather.get("sunrise") if weather else None,
+            weather.get("sunset") if weather else None,
+        ))
         features.update(extract_price_features(raw_price, lead_hours, spike_status))
         return features

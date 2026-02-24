@@ -34,6 +34,11 @@ class SolcastClient:
         self._headers = {"Authorization": f"Bearer {self.api_key}"}
         self._last_fetch_time: datetime | None = None
 
+    @property
+    def last_fetch_time(self) -> datetime | None:
+        """When Solcast data was last fetched from the API."""
+        return self._last_fetch_time
+
     def should_fetch_now(self, now: datetime | None = None) -> bool:
         """Check if it's time for a scheduled fetch."""
         now = now or datetime.now()
@@ -112,12 +117,12 @@ class SolcastClient:
         logger.info("Fetched %d solar forecast intervals from Solcast", len(results))
         return results
 
-    def get_forecast(self) -> list[dict]:
+    def get_forecast(self, allow_fetch: bool = True) -> list[dict]:
         """Get the latest cached solar forecast.
 
         Fetches fresh data if scheduled, otherwise returns last cached version.
         """
-        if self.should_fetch_now():
+        if allow_fetch and self.should_fetch_now():
             fresh = self.fetch_forecast()
             if fresh:
                 return fresh

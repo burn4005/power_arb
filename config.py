@@ -29,7 +29,7 @@ def _env_bool(key: str, default: bool = False) -> bool:
 
 @dataclass(frozen=True)
 class AmberConfig:
-    api_key: str = _env("AMBER_API_KEY", required=True)
+    api_key: str = _env("AMBER_API_KEY", "")
     site_id: str = _env("AMBER_SITE_ID", "")  # auto-discovered if empty
 
 
@@ -98,6 +98,8 @@ class SystemConfig:
     dry_run: bool = _env_bool("DRY_RUN", False)
     dashboard_enabled: bool = _env_bool("DASHBOARD_ENABLED", True)
     dashboard_port: int = _env_int("DASHBOARD_PORT", 8081)
+    dashboard_bind_host: str = _env("DASHBOARD_BIND_HOST", "127.0.0.1")
+    dashboard_api_token: str = _env("DASHBOARD_API_TOKEN", "")
 
 
 @dataclass(frozen=True)

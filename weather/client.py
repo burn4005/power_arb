@@ -27,6 +27,11 @@ class WeatherClient:
         self.refresh_hours = config.weather.refresh_interval_hours
         self._last_fetch_time: datetime | None = None
 
+    @property
+    def last_fetch_time(self) -> datetime | None:
+        """When weather data was last fetched from the API."""
+        return self._last_fetch_time
+
     def should_fetch_now(self) -> bool:
         if self._last_fetch_time is None:
             return True
@@ -90,9 +95,9 @@ class WeatherClient:
         logger.info("Fetched %d weather forecast hours from Open-Meteo", len(records))
         return records
 
-    def get_forecast(self) -> list[dict]:
+    def get_forecast(self, allow_fetch: bool = True) -> list[dict]:
         """Get weather forecast, fetching fresh data if due."""
-        if self.should_fetch_now():
+        if allow_fetch and self.should_fetch_now():
             fresh = self.fetch_forecast()
             if fresh:
                 return fresh

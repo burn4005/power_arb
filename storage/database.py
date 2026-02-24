@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS battery_log (
     grid_power_w REAL NOT NULL,
     pv_power_w REAL NOT NULL,
     load_power_w REAL NOT NULL,
-    battery_temp_c REAL
+    battery_temp_c REAL,
+    inverter_internal_temp_c REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_battery_ts ON battery_log(timestamp);
@@ -142,6 +143,9 @@ class Database:
         if "battery_temp_c" not in cols:
             conn.execute("ALTER TABLE battery_log ADD COLUMN battery_temp_c REAL")
             logger.info("Migrated battery_log: added battery_temp_c column")
+        if "inverter_internal_temp_c" not in cols:
+            conn.execute("ALTER TABLE battery_log ADD COLUMN inverter_internal_temp_c REAL")
+            logger.info("Migrated battery_log: added inverter_internal_temp_c column")
 
     @contextmanager
     def _connect(self):
@@ -252,7 +256,7 @@ class Database:
             rows = conn.execute(
                 """SELECT * FROM consumption_log
                    WHERE source = 'measured'
-                   AND timestamp >= datetime('now', ?)
+                   AND datetime(replace(timestamp, 'T', ' ')) >= datetime('now', ?)
                    ORDER BY timestamp""",
                 (f"-{days} days",),
             ).fetchall()
@@ -261,14 +265,17 @@ class Database:
     # -- Battery log operations --
 
     def insert_battery_log(self, entry: dict):
+        payload = dict(entry)
+        payload.setdefault("battery_temp_c", None)
+        payload.setdefault("inverter_internal_temp_c", None)
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO battery_log
                    (timestamp, soc_pct, soc_kwh, battery_power_w,
-                    grid_power_w, pv_power_w, load_power_w, battery_temp_c)
+                    grid_power_w, pv_power_w, load_power_w, battery_temp_c, inverter_internal_temp_c)
                    VALUES (:timestamp, :soc_pct, :soc_kwh, :battery_power_w,
-                           :grid_power_w, :pv_power_w, :load_power_w, :battery_temp_c)""",
-                entry,
+                           :grid_power_w, :pv_power_w, :load_power_w, :battery_temp_c, :inverter_internal_temp_c)""",
+                payload,
             )
 
     def get_battery_log_since(self, since: str) -> list[dict]:
@@ -323,7 +330,7 @@ class Database:
             rows = conn.execute(
                 """SELECT * FROM forecast_accuracy
                    WHERE channel = ? AND actual_price IS NOT NULL
-                   AND target_time >= datetime('now', ?)
+                   AND datetime(replace(target_time, 'T', ' ')) >= datetime('now', ?)
                    ORDER BY target_time""",
                 (channel, f"-{days} days"),
             ).fetchall()
@@ -392,7 +399,8 @@ class Database:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM feature_snapshots
-                   WHERE snapshot_type = ? AND timestamp >= datetime('now', ?)
+                   WHERE snapshot_type = ?
+                   AND datetime(replace(timestamp, 'T', ' ')) >= datetime('now', ?)
                    ORDER BY timestamp""",
                 (snapshot_type, f"-{days} days"),
             ).fetchall()
@@ -426,7 +434,7 @@ class Database:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM occupancy_log
-                   WHERE timestamp >= datetime('now', ?)
+                   WHERE datetime(replace(timestamp, 'T', ' ')) >= datetime('now', ?)
                    ORDER BY timestamp""",
                 (f"-{hours} hours",),
             ).fetchall()
@@ -452,7 +460,8 @@ class Database:
                 ("occupancy_log", "timestamp"),
             ]:
                 result = conn.execute(
-                    f"DELETE FROM {table} WHERE {col} < datetime('now', ?)",
+                    f"DELETE FROM {table} "
+                    f"WHERE datetime(replace({col}, 'T', ' ')) < datetime('now', ?)",
                     (cutoff,),
                 )
                 if result.rowcount > 0:

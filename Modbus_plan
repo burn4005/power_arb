@@ -1,0 +1,94 @@
+# Modbus Migration Plan (FoxESS V1.05.04.00)
+
+## Goal
+Migrate `foxess/modbus_client.py` from legacy `31xxx/41xxx/44xxx` register usage to the newer protocol map (`39xxx/46xxx/49xxx`) validated from:
+`FoxESS.Modbus.Protocol--20251215.V1.05.04.00.pdf`.
+
+## Scope
+- Read path: inverter state, PV, load, grid, SoC, temperatures, BMS limits.
+- Write path: work mode, min SoC, remote control enable/timeout/power.
+- Backward compatibility strategy for existing installations.
+- Tests and rollout safety.
+
+## Phase 1: Prepare and Freeze Current Behavior
+1. Add snapshot logs/tests of current decoded outputs from `read_state()` (soc, pv, load, grid, battery power, mode).
+2. Add explicit sign-convention documentation in code comments:
+   - internal convention for `battery_power_w`
+   - internal convention for `grid_power_w`
+3. Add a temporary runtime config switch:
+   - `FOXESS_PROTOCOL_MAP=legacy|v10504`
+   - default to `legacy` for safe rollout.
+
+## Phase 2: Add New Register Map (No Behavior Change Yet)
+1. Introduce new constants class, e.g. `KHRegistersV10504`, alongside current map.
+2. Include only registers actually required by app logic:
+   - PV power (`39279` + offset pattern)
+   - internal temperature (`39141`)
+   - load combined power (`39225`)
+   - meter/grid active power (`39168`)
+   - system SoC (`39423`)
+   - battery voltage/current/power (`39227/39228/39230`)
+   - min SoC / min SoC on-grid (`46609/46611`)
+   - work mode (`49203`)
+   - remote control (`46001/46002/46003`)
+3. Keep old constants unchanged to avoid immediate breakage.
+
+## Phase 3: Implement Decoder for V1.05.04.00
+1. Add dedicated parser functions:
+   - `_read_state_legacy()`
+   - `_read_state_v10504()`
+2. Handle 32-bit fields correctly (signed/unsigned as per PDF).
+3. Normalize signs into existing internal conventions:
+   - `battery_power_w`: keep current app convention (charge positive, discharge negative), with explicit conversion from PDF semantics.
+   - `grid_power_w`: keep import positive, export negative.
+4. Preserve existing `InverterState` dataclass contract.
+
+## Phase 4: Implement Writer for V1.05.04.00
+1. Add map-specific write functions:
+   - `_set_work_mode_legacy()` / `_set_work_mode_v10504()`
+   - `_set_min_soc_legacy()` / `_set_min_soc_v10504()`
+   - `_set_remote_control_legacy()` / `_set_remote_control_v10504()`
+2. For v10504 remote control:
+   - write bitfield at `46001` (enable, direction, target)
+   - timeout at `46002`
+   - 32-bit active power command at `46003` (2 registers, FC16 or equivalent helper)
+3. Keep emergency fallback behavior functional in both maps.
+
+## Phase 5: Integration and Safety
+1. Route reads/writes based on `FOXESS_PROTOCOL_MAP`.
+2. On startup, log selected map and key register addresses.
+3. Add guardrails:
+   - clamp SoC writes (`10..100`)
+   - validate decoded ranges before using optimizer inputs
+   - fallback to safe mode if read decode fails.
+
+## Phase 6: Tests
+1. Unit tests:
+   - register decode for both maps
+   - 16-bit and 32-bit signed conversions
+   - sign normalization for battery/grid power
+2. Modbus client mock tests:
+   - verify exact addresses/counts written per action.
+3. Regression tests:
+   - ensure optimizer inputs unchanged in meaning (`InverterState` contract).
+
+## Phase 7: Rollout
+1. Deploy with `legacy` default.
+2. Enable `v10504` in test environment first.
+3. Compare live telemetry side-by-side for 24-48 hours:
+   - SoC
+   - battery power
+   - grid power
+   - mode transitions
+4. Switch default to `v10504` after validation.
+
+## Open Decisions
+1. Confirm target model/firmware family for this site (KH variant and firmware build).
+2. Confirm whether work mode should be controlled via `49203` only, or via time-group table (`4801x`) in specific workflows.
+3. Confirm remote control target bitfield settings in `46001` for desired behavior (AC vs Battery vs Grid target).
+
+## Deliverables
+1. Updated `foxess/modbus_client.py` with dual-map support.
+2. Config additions for protocol-map selection.
+3. Tests covering decode/write behavior.
+4. Migration notes in docs.
