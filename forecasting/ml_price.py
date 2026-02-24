@@ -17,7 +17,7 @@ import numpy as np
 
 import config
 from amber.client import PriceInterval
-from amber.price_dampener import PriceDampener, DampenedPrice
+from forecasting.price_dampener import PriceDampener, DampenedPrice
 from forecasting.features import (
     extract_time_features, extract_daylight_features, extract_price_features,
     PRICE_FEATURE_NAMES, features_to_vector,

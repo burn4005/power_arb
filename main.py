@@ -26,9 +26,8 @@ import schedule
 
 import config
 from amber.client import AmberClient
-from amber.price_dampener import PriceDampener
+from forecasting.price_dampener import PriceDampener
 from flowpower.client import FlowPowerClient
-from flowpower.price_dampener import PriceDampener as FlowPowerPriceDampener
 from foxess.modbus_client import FoxESSModbusClient, WorkMode
 from pricing.custom_csv import generate_price_intervals
 from solcast.client import SolcastClient, FETCH_HOURS_AEST
@@ -74,8 +73,7 @@ class PowerArbSystem:
         self.db = Database()
         self.amber = AmberClient(self.db)
         self.dampener = PriceDampener(self.db)
-        self.flowpower = FlowPowerClient(self.db)
-        self.flowpower_dampener = FlowPowerPriceDampener(self.db)
+        self.flowpower: FlowPowerClient | None = None
         self.foxess = FoxESSModbusClient()
         self.solcast_client = SolcastClient(self.db)
         self.solar_forecaster = SolarForecaster(self.solcast_client)
@@ -126,37 +124,37 @@ class PowerArbSystem:
             # 1. Read inverter state
             state = self.foxess.read_state()
             if state is None:
-                logger.error("Cannot read inverter state; skipping cycle")
+                logger.error("Cannot read inverter state; continuing with data-only cycle")
                 self._handle_failure()
-                return
+                current_soc = None
+            else:
+                self._consecutive_failures = 0
+                current_soc = state.soc_kwh
 
-            self._consecutive_failures = 0
-            current_soc = state.soc_kwh
+                logger.info(
+                    "Inverter: SoC=%.1f kWh (%.0f%%), PV=%dW, Grid=%dW, Load=%dW, "
+                    "Mode=%s, BMS charge=%dW, BMS discharge=%dW",
+                    state.soc_kwh, state.soc_pct, state.pv_power_w,
+                    state.grid_power_w, state.load_power_w, state.work_mode.name,
+                    state.bms_max_charge_w, state.bms_max_discharge_w,
+                )
 
-            logger.info(
-                "Inverter: SoC=%.1f kWh (%.0f%%), PV=%dW, Grid=%dW, Load=%dW, "
-                "Mode=%s, BMS charge=%dW, BMS discharge=%dW",
-                state.soc_kwh, state.soc_pct, state.pv_power_w,
-                state.grid_power_w, state.load_power_w, state.work_mode.name,
-                state.bms_max_charge_w, state.bms_max_discharge_w,
-            )
+                # Log battery state
+                self.db.insert_battery_log({
+                    "timestamp": cycle_start.isoformat(),
+                    "soc_pct": state.soc_pct,
+                    "soc_kwh": state.soc_kwh,
+                    "battery_power_w": state.battery_power_w,
+                    "grid_power_w": state.grid_power_w,
+                    "pv_power_w": state.pv_power_w,
+                    "load_power_w": state.load_power_w,
+                    "battery_temp_c": state.battery_temp_c,
+                })
 
-            # Log battery state
-            self.db.insert_battery_log({
-                "timestamp": cycle_start.isoformat(),
-                "soc_pct": state.soc_pct,
-                "soc_kwh": state.soc_kwh,
-                "battery_power_w": state.battery_power_w,
-                "grid_power_w": state.grid_power_w,
-                "pv_power_w": state.pv_power_w,
-                "load_power_w": state.load_power_w,
-                "battery_temp_c": state.battery_temp_c,
-            })
-
-            # Log consumption for forecaster training
-            self.db.insert_consumption(
-                cycle_start.isoformat(), state.load_power_w, "measured"
-            )
+                # Log consumption for forecaster training
+                self.db.insert_consumption(
+                    cycle_start.isoformat(), state.load_power_w, "measured"
+                )
 
             # 1b. Poll occupancy and AC state (if HA configured)
             occupancy = self.ha.poll_occupancy()
@@ -181,6 +179,8 @@ class PowerArbSystem:
                 dampened_import = None
                 dampened_export = None
             elif retailer_mode == "flowpower":
+                if self.flowpower is None:
+                    self.flowpower = FlowPowerClient(self.db)
                 prices = self.flowpower.fetch_current_and_forecast()
                 import_prices_raw = prices["import"]
                 export_prices_raw = prices["export"]
@@ -197,13 +197,10 @@ class PowerArbSystem:
                 logger.error("No price data; skipping cycle")
                 return
 
-            # 3. Dampen forecast prices (custom prices used as-is)
+            # 3. Dampen forecast prices (shared ML path for Amber + Flow Power).
             if retailer_mode == "custom" and config.retailer.custom_pricing_csv:
                 dampened_import = import_prices_raw
                 dampened_export = export_prices_raw
-            elif retailer_mode == "flowpower":
-                dampened_import = self.flowpower_dampener.dampen(import_prices_raw, cycle_start)
-                dampened_export = self.flowpower_dampener.dampen(export_prices_raw, cycle_start)
             else:
                 dampened_import = self.ml_price.dampen(import_prices_raw, cycle_start)
                 dampened_export = self.ml_price.dampen(export_prices_raw, cycle_start)
@@ -255,6 +252,26 @@ class PowerArbSystem:
             solar_kw = [solar_fc[i]["solar_kw"] for i in range(n_periods)]
             load_kw = [consumption_fc[i]["load_kw"] for i in range(n_periods)]
             timestamps = [dampened_import[i].timestamp for i in range(n_periods)]
+
+            # If inverter is offline, still keep data ingest active but skip control.
+            if current_soc is None:
+                elapsed_ms = (datetime.now() - cycle_start).total_seconds() * 1000
+                self._cycle_ms = int(elapsed_ms)
+                self._watchdog_last_run = time.time()
+                self._write_dashboard_status_inverter_offline(
+                    cycle_start,
+                    import_prices_raw, export_prices_raw,
+                    dampened_import, dampened_export,
+                    solar_fc,
+                    import_cents, export_cents, solar_kw, load_kw,
+                    timestamps, n_periods, horizon_hours,
+                )
+                logger.warning(
+                    "Data-only cycle complete in %.1fs | captured prices/forecasts, "
+                    "skipped optimization/control (inverter offline)",
+                    elapsed_ms / 1000,
+                )
+                return
 
             # 7. Run optimizer
             result = self.optimizer.optimize(
@@ -565,6 +582,180 @@ class PowerArbSystem:
 
         except Exception as e:
             logger.warning("Failed to write dashboard status: %s", e)
+
+    def _write_dashboard_status_inverter_offline(
+        self, cycle_start,
+        import_prices_raw, export_prices_raw,
+        dampened_import, dampened_export,
+        solar_fc,
+        import_cents, export_cents, solar_kw, load_kw,
+        timestamps, n_periods, horizon_hours,
+    ):
+        """Write dashboard_status.json for data-only cycles (inverter offline)."""
+        try:
+            # Solcast health info
+            solcast_last = self.solcast_client._last_fetch_time
+            current_hour = cycle_start.hour
+            next_solcast = next(
+                (h for h in FETCH_HOURS_AEST if h > current_hour),
+                FETCH_HOURS_AEST[0],
+            )
+            solcast_calls_today = sum(1 for h in FETCH_HOURS_AEST if h <= current_hour)
+
+            # Solar P10/P90 arrays
+            solar_p10 = [solar_fc[i].get("solar_p10_kw", 0.0) for i in range(n_periods)]
+            solar_p90 = [solar_fc[i].get("solar_p90_kw", 0.0) for i in range(n_periods)]
+
+            # History: last 48h battery log + decisions
+            since_48h = (cycle_start - timedelta(hours=48)).isoformat()
+            history = self.db.get_battery_log_since(since_48h)
+            decisions = self.db.get_decisions_since(since_48h)
+            decision_map = {d["timestamp"]: d for d in decisions}
+
+            # Financial (no control action executed this cycle)
+            today_savings = self._today_baseline_c - (
+                self._today_import_cost_c
+                - self._today_export_revenue_c
+                + self._today_degradation_c
+            )
+            capacity = config.battery.capacity_kwh
+            cycles_today = (
+                self._today_energy_cycled_kwh / (2 * capacity)
+                if capacity > 0 else 0
+            )
+
+            live_import = import_prices_raw[0].per_kwh if import_prices_raw else 0.0
+            live_export = export_prices_raw[0].per_kwh if export_prices_raw else 0.0
+            live_dampened_import = import_cents[0] if import_cents else 0.0
+            live_dampened_export = export_cents[0] if export_cents else 0.0
+
+            status = {
+                "updated_at": cycle_start.isoformat(),
+                "cycle_ms": self._cycle_ms,
+
+                "live": {
+                    "pv_power_kw": 0.0,
+                    "load_power_kw": 0.0,
+                    "grid_power_kw": 0.0,
+                    "battery_power_kw": 0.0,
+                    "soc_pct": 0.0,
+                    "soc_kwh": 0.0,
+                    "battery_temp_c": 0.0,
+                    "min_soc_pct": config.battery.min_soc_pct,
+                    "import_price_c": round(live_import, 1),
+                    "export_price_c": round(live_export, 1),
+                    "dampened_import_c": round(live_dampened_import, 1),
+                    "dampened_export_c": round(live_dampened_export, 1),
+                    "spike_status": import_prices_raw[0].spike_status if import_prices_raw else "none",
+                    "action": "HOLD",
+                    "optimizer_action": None,
+                    "reason": "Inverter offline: data ingest active, control skipped",
+                    "work_mode": "OFFLINE",
+                    "remote_control_active": False,
+                    "override": self._manual_override or "AUTO",
+                    "override_expires": self._override_expires.isoformat() if self._override_expires else None,
+                    "bms_max_charge_kw": 0.0,
+                    "bms_max_discharge_kw": 0.0,
+                },
+
+                "forecast": {
+                    "timestamps": timestamps,
+                    "raw_import_price_c": [
+                        round(dampened_import[i].per_kwh if self._using_custom else dampened_import[i].raw_per_kwh, 1)
+                        for i in range(n_periods)
+                    ],
+                    "raw_export_price_c": [
+                        round(dampened_export[i].per_kwh if self._using_custom else dampened_export[i].raw_per_kwh, 1)
+                        for i in range(n_periods)
+                    ],
+                    "import_price_c": [round(v, 1) for v in import_cents],
+                    "export_price_c": [round(v, 1) for v in export_cents],
+                    "solar_kw": [round(v, 2) for v in solar_kw],
+                    "solar_p10_kw": [round(v, 2) for v in solar_p10],
+                    "solar_p90_kw": [round(v, 2) for v in solar_p90],
+                    "load_kw": [round(v, 2) for v in load_kw],
+                    "schedule_action": [],
+                    "schedule_profit_c": [],
+                    "soc_trajectory_kwh": [],
+                },
+
+                "financial": {
+                    "today_import_cost_c": round(self._today_import_cost_c, 1),
+                    "today_export_revenue_c": round(self._today_export_revenue_c, 1),
+                    "today_degradation_cost_c": round(self._today_degradation_c, 1),
+                    "today_savings_c": round(today_savings, 1),
+                    "horizon_profit_c": 0.0,
+                },
+
+                "battery_health": {
+                    "cycles_today": round(cycles_today, 2),
+                    "capacity_kwh": config.battery.capacity_kwh,
+                    "min_soc_kwh": config.battery.min_soc_kwh,
+                    "max_power_kw": config.battery.max_power_kw,
+                    "cycle_life": config.battery.cycle_life,
+                },
+
+                "system_health": {
+                    "amber_last_fetch": cycle_start.isoformat(),
+                    "amber_status": "ok",
+                    "amber_prices_count": n_periods,
+                    "solcast_last_fetch": solcast_last.isoformat() if solcast_last else None,
+                    "solcast_status": "ok" if solcast_last else "no_data",
+                    "solcast_calls_today": solcast_calls_today,
+                    "solcast_next_scheduled_hour": next_solcast,
+                    "foxess_status": "offline",
+                    "foxess_last_read": None,
+                    "optimizer_last_run": cycle_start.isoformat(),
+                    "optimizer_execution_ms": self._cycle_ms,
+                    "optimizer_horizon_hours": horizon_hours,
+                    "consecutive_failures": self._consecutive_failures,
+                    "errors": list(self._errors),
+                    "ml_price_model": "active" if self.ml_price._model_trained else "fallback",
+                    "ml_consumption_model": "active" if self.ml_consumption._model_trained else "fallback",
+                    "ha_enabled": config.homeassistant.enabled,
+                    "weather_last_fetch": self.weather._last_fetch_time.isoformat() if self.weather._last_fetch_time else None,
+                },
+
+                "history": {
+                    "timestamps": [r["timestamp"] for r in history],
+                    "soc_kwh": [round(r["soc_kwh"], 1) for r in history],
+                    "pv_power_kw": [round(r["pv_power_w"] / 1000, 2) for r in history],
+                    "load_power_kw": [round(r["load_power_w"] / 1000, 2) for r in history],
+                    "grid_power_kw": [round(r["grid_power_w"] / 1000, 2) for r in history],
+                    "battery_power_kw": [round(r["battery_power_w"] / 1000, 2) for r in history],
+                    "battery_temp_c": [
+                        round(r["battery_temp_c"], 1) if r["battery_temp_c"] is not None else None
+                        for r in history
+                    ],
+                    "import_price_c": [
+                        round(decision_map[r["timestamp"]]["import_price"], 1)
+                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["import_price"] is not None
+                        else None
+                        for r in history
+                    ],
+                    "export_price_c": [
+                        round(decision_map[r["timestamp"]]["export_price"], 1)
+                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["export_price"] is not None
+                        else None
+                        for r in history
+                    ],
+                    "action": [
+                        decision_map[r["timestamp"]]["action"].upper()
+                        if r["timestamp"] in decision_map and decision_map[r["timestamp"]]["action"]
+                        else None
+                        for r in history
+                    ],
+                },
+            }
+
+            tmp_path = STATUS_PATH.with_suffix(".json.tmp")
+            with open(tmp_path, "w") as f:
+                json.dump(status, f)
+            os.replace(str(tmp_path), str(STATUS_PATH))
+            logger.debug("Dashboard status written (inverter offline) to %s", STATUS_PATH)
+
+        except Exception as e:
+            logger.warning("Failed to write offline dashboard status: %s", e)
 
     def _handle_failure(self):
         self._consecutive_failures += 1

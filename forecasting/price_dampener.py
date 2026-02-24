@@ -6,7 +6,7 @@ from datetime import datetime
 from amber.client import PriceInterval
 from storage.database import Database
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pricing.price_dampener")
 
 # Default median prices (cents/kWh) by time-of-day bucket for QLD.
 # These are starting estimates; replaced by empirical data once available.
@@ -58,7 +58,7 @@ class PriceDampener:
         """Update dampening parameters from historical forecast accuracy data."""
         records = self.db.get_forecast_accuracy(channel="import", days=30)
         if len(records) < 100:
-            logger.info(
+            logger.debug(
                 "Only %d accuracy records; using default dampening params", len(records)
             )
             return

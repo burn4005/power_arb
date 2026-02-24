@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from datetime import datetime, timedelta
 from amber.client import PriceInterval
-from amber.price_dampener import PriceDampener
+from forecasting.price_dampener import PriceDampener
 from storage.database import Database
 
 
