@@ -53,8 +53,30 @@ def read_env_file() -> dict[str, str]:
                     continue
                 if "=" in line:
                     key, _, value = line.partition("=")
-                    settings[key.strip()] = value.strip()
+                    key = key.strip()
+                    settings[key] = _parse_env_value(key, value.strip())
     return settings
+
+
+_JSON_KEYS = {"SWITCHBOARD_CIRCUITS"}
+
+
+def _format_env_value(key: str, value: str) -> str:
+    """Quote values that need it for safe .env storage (e.g. JSON strings)."""
+    if key in _JSON_KEYS:
+        escaped = value.replace("'", "\\'")
+        return f"'{escaped}'"
+    return value
+
+
+def _parse_env_value(key: str, value: str) -> str:
+    """Strip surrounding quotes added by _format_env_value."""
+    if key in _JSON_KEYS and len(value) >= 2:
+        if (value.startswith("'") and value.endswith("'")):
+            return value[1:-1].replace("\\'", "'")
+        if (value.startswith('"') and value.endswith('"')):
+            return value[1:-1].replace('\\"', '"')
+    return value
 
 
 def write_env_file(settings: dict[str, str]):
@@ -67,7 +89,8 @@ def write_env_file(settings: dict[str, str]):
                 if stripped and not stripped.startswith("#") and "=" in stripped:
                     key = stripped.partition("=")[0].strip()
                     if key in settings:
-                        lines.append(f"{key}={settings[key]}\n")
+                        formatted = _format_env_value(key, settings[key])
+                        lines.append(f"{key}={formatted}\n")
                         written_keys.add(key)
                     else:
                         lines.append(line)
@@ -79,7 +102,8 @@ def write_env_file(settings: dict[str, str]):
             lines.append("\n")
         lines.append("\n# Added by settings page\n")
         for key in sorted(new_keys):
-            lines.append(f"{key}={settings[key]}\n")
+            formatted = _format_env_value(key, settings[key])
+            lines.append(f"{key}={formatted}\n")
     with open(ENV_PATH, "w") as f:
         f.writelines(lines)
 

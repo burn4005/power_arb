@@ -263,6 +263,70 @@
     margin: 4px 0;
   }
 
+  .circuit-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  .circuit-row input[type="text"],
+  .circuit-row input[type="number"],
+  .circuit-row select {
+    background: #161b22;
+    border: 1px solid #30363d;
+    color: #e1e4e8;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .circuit-row input[type="text"] { flex: 1; min-width: 0; }
+  .circuit-row input[type="number"] { width: 70px; }
+  .circuit-row select { width: 70px; }
+  .circuit-row input:focus, .circuit-row select:focus {
+    outline: none;
+    border-color: #58a6ff;
+  }
+  .circuit-row label {
+    font-size: 11px;
+    color: #484f58;
+    white-space: nowrap;
+  }
+  .circuit-move-btn {
+    background: #21262d;
+    border: 1px solid #30363d;
+    color: #8b949e;
+    border-radius: 4px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .circuit-move-btn:hover { background: #30363d; color: #e1e4e8; }
+  .circuit-move-btn:disabled { opacity: 0.3; cursor: default; }
+  .circuit-remove-btn {
+    background: transparent;
+    border: 1px solid #30363d;
+    color: #8b949e;
+    border-radius: 4px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .circuit-remove-btn:hover { border-color: #da3633; color: #da3633; }
+
   @media (max-width: 768px) {
     .form-row {
       grid-template-columns: 1fr;
@@ -436,6 +500,21 @@
     </div>
   </div>
 
+  <!-- Switchboard Circuits -->
+  <div class="section">
+    <div class="section-header">
+      <span class="icon">&#9889;</span>
+      <h2>Switchboard Circuits</h2>
+    </div>
+    <div class="section-body">
+      <div style="font-size:12px;color:#484f58;margin-bottom:4px;">
+        Define the circuits in your switchboard in order. Use the arrows to reorder them.
+      </div>
+      <div id="circuitList" style="display:flex;flex-direction:column;gap:8px;"></div>
+      <button type="button" class="btn btn-secondary" id="btnAddCircuit" style="margin-top:8px;padding:7px 16px;font-size:13px;">+ Add Circuit</button>
+    </div>
+  </div>
+
   <!-- System -->
   <div class="section">
     <div class="section-header">
@@ -537,6 +616,14 @@ async function loadSettings() {
       loadCsvPreview();
     }
 
+    // Load switchboard circuits
+    try {
+      circuits = JSON.parse(data['SWITCHBOARD_CIRCUITS'] || '[]');
+    } catch (e) {
+      circuits = [];
+    }
+    renderCircuits();
+
   } catch (err) {
     showToast('Failed to load settings: ' + err.message, 'error');
   }
@@ -567,6 +654,9 @@ async function saveSettings() {
   } else {
     settings['CUSTOM_PRICING_CSV'] = '';
   }
+
+  // Switchboard circuits
+  settings['SWITCHBOARD_CIRCUITS'] = JSON.stringify(circuits);
 
   try {
     const resp = await fetch('/api/settings', {
@@ -666,6 +756,82 @@ async function loadCsvPreview() {
 // ── Button handlers ──────────────────────────────────────────────
 document.getElementById('btnSave').addEventListener('click', saveSettings);
 document.getElementById('btnReload').addEventListener('click', loadSettings);
+
+// ── Switchboard Circuits ─────────────────────────────────────────
+let circuits = [];
+
+function renderCircuits() {
+  const list = document.getElementById('circuitList');
+  list.innerHTML = '';
+  circuits.forEach((c, i) => {
+    const row = document.createElement('div');
+    row.className = 'circuit-row';
+    row.innerHTML = `
+      <input type="text" placeholder="Circuit name" value="${escHtml(c.name)}" data-ci="${i}" data-field="name">
+      <label>A</label>
+      <input type="number" min="1" max="100" value="${c.amps}" data-ci="${i}" data-field="amps" title="Amperage">
+      <label>Phase</label>
+      <select data-ci="${i}" data-field="phase">
+        <option value="A"${c.phase==='A'?' selected':''}>A</option>
+        <option value="B"${c.phase==='B'?' selected':''}>B</option>
+        <option value="C"${c.phase==='C'?' selected':''}>C</option>
+        <option value="3P"${c.phase==='3P'?' selected':''}>3P</option>
+      </select>
+      <button class="circuit-move-btn" data-move="-1" data-ci="${i}" title="Move up" ${i===0?'disabled':''}>&#9650;</button>
+      <button class="circuit-move-btn" data-move="1" data-ci="${i}" title="Move down" ${i===circuits.length-1?'disabled':''}>&#9660;</button>
+      <button class="circuit-remove-btn" data-ci="${i}" title="Remove">&#10005;</button>
+    `;
+    list.appendChild(row);
+  });
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+document.getElementById('circuitList').addEventListener('input', (e) => {
+  const ci = parseInt(e.target.dataset.ci);
+  const field = e.target.dataset.field;
+  if (isNaN(ci) || !field) return;
+  if (field === 'amps') {
+    circuits[ci].amps = parseInt(e.target.value) || 10;
+  } else {
+    circuits[ci][field] = e.target.value;
+  }
+});
+
+document.getElementById('circuitList').addEventListener('change', (e) => {
+  const ci = parseInt(e.target.dataset.ci);
+  const field = e.target.dataset.field;
+  if (isNaN(ci) || !field) return;
+  circuits[ci][field] = e.target.value;
+});
+
+document.getElementById('circuitList').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const ci = parseInt(btn.dataset.ci);
+
+  if (btn.dataset.move !== undefined) {
+    const dir = parseInt(btn.dataset.move);
+    const j = ci + dir;
+    if (j >= 0 && j < circuits.length) {
+      [circuits[ci], circuits[j]] = [circuits[j], circuits[ci]];
+      renderCircuits();
+    }
+  } else if (btn.classList.contains('circuit-remove-btn')) {
+    circuits.splice(ci, 1);
+    renderCircuits();
+  }
+});
+
+document.getElementById('btnAddCircuit').addEventListener('click', () => {
+  circuits.push({ name: '', amps: 20, phase: 'A' });
+  renderCircuits();
+  // Focus new name input
+  const inputs = document.querySelectorAll('#circuitList .circuit-row input[type="text"]');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+});
 
 // ── Init ─────────────────────────────────────────────────────────
 loadSettings();

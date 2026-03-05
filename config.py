@@ -1,6 +1,8 @@
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import List
 
 from dotenv import load_dotenv
 
@@ -76,6 +78,27 @@ class BatteryConfig:
         return self.efficiency ** 0.5
 
 
+@dataclass
+class SwitchboardCircuit:
+    name: str
+    amps: int
+    phase: str = "A"  # A, B, C, or 3P
+
+
+def _load_switchboard_circuits() -> List[SwitchboardCircuit]:
+    raw = os.getenv("SWITCHBOARD_CIRCUITS", "[]")
+    try:
+        items = json.loads(raw)
+        return [SwitchboardCircuit(**item) for item in items]
+    except Exception:
+        return []
+
+
+@dataclass
+class SwitchboardConfig:
+    circuits: List[SwitchboardCircuit] = field(default_factory=_load_switchboard_circuits)
+
+
 @dataclass(frozen=True)
 class RetailerConfig:
     retailer: str = _env("RETAILER", "amber")  # 'amber' or 'custom'
@@ -100,3 +123,4 @@ foxess = FoxESSConfig()
 battery = BatteryConfig()
 retailer = RetailerConfig()
 system = SystemConfig()
+switchboard = SwitchboardConfig()
